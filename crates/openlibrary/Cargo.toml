@@ -1,0 +1,18 @@
+[package]
+name = "rekindle-openlibrary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+httpdate.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+rekindle-kindle.workspace = true
+
+[dev-dependencies]
+axum.workspace = true

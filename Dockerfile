@@ -1,0 +1,34 @@
+FROM node:22-bookworm-slim AS web-build
+
+WORKDIR /app
+COPY app/web/package.json app/web/package-lock.json ./
+RUN npm ci
+COPY app/web ./
+RUN npm run build
+
+FROM rust:1.88-slim-bookworm AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY crates ./crates
+COPY migrations ./migrations
+RUN cargo build --locked --release
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 app
+WORKDIR /app
+COPY --from=build /app/target/release/rekindle-api /usr/local/bin/rekindle-api
+COPY --from=web-build /app/build ./app/web/build
+
+USER app
+EXPOSE 3000
+CMD ["rekindle-api"]
