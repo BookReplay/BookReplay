@@ -1,3 +1,4 @@
+use rekindle_openlibrary::OpenLibraryBook;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -19,6 +20,40 @@ pub async fn all(pool: &PgPool) -> Result<Vec<BookSummary>, sqlx::Error> {
          GROUP BY books.id ORDER BY books.title",
     )
     .fetch_all(pool)
+    .await
+}
+
+pub async fn identify(
+    pool: &PgPool,
+    book_id: i64,
+    book: &OpenLibraryBook,
+) -> Result<Option<BookSummary>, sqlx::Error> {
+    let cover_url = book
+        .cover_id
+        .map(|cover_id| format!("https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"));
+    sqlx::query_as(
+        "WITH updated AS (\
+             UPDATE books SET open_library_key = $2, title = $3, authors = $4, cover_url = $5, \
+                 first_publish_year = $6, edition_count = $7, isbns = $8, \
+                 metadata_checked_at = NOW(), retry_count = 0, next_attempt_at = NOW(), \
+                 last_error = NULL, updated_at = NOW() \
+             WHERE id = $1 RETURNING id, title, authors, cover_url\
+         ) \
+         SELECT updated.id, updated.title, updated.authors, updated.cover_url, \
+                COUNT(clippings.id) AS highlight_count \
+         FROM updated LEFT JOIN clippings ON clippings.book_id = updated.id \
+             AND btrim(clippings.content) <> '' \
+         GROUP BY updated.id, updated.title, updated.authors, updated.cover_url",
+    )
+    .bind(book_id)
+    .bind(&book.open_library_key)
+    .bind(book.title.trim())
+    .bind(&book.authors)
+    .bind(cover_url)
+    .bind(book.first_publish_year)
+    .bind(book.edition_count)
+    .bind(&book.isbns)
+    .fetch_optional(pool)
     .await
 }
 

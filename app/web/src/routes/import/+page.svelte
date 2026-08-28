@@ -1,4 +1,6 @@
 <script lang="ts">
+	import LogoutButton from '$lib/LogoutButton.svelte';
+
 	type ImportResponse = {
 		message?: string;
 		parsed?: number;
@@ -59,7 +61,10 @@
 <main id="main-content" class="mx-auto min-h-screen w-[calc(100%-2rem)] max-w-6xl pt-5 pb-20 max-sm:w-[calc(100%-1.5rem)]">
 	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
 		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">Rekindle</a>
-		<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">← Your bookshelf</a>
+		<div class="flex items-center gap-4">
+			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">← Your bookshelf</a>
+			<LogoutButton />
+		</div>
 	</nav>
 
 	<section class="mx-auto mt-[clamp(4rem,12vw,9rem)] w-full max-w-[38rem] rounded-xl border border-line bg-cream p-[clamp(1.5rem,6vw,3.5rem)] shadow-[0_1.25rem_3rem_rgb(80_65_40/10%)]" aria-labelledby="import-title">

@@ -1,11 +1,15 @@
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
+};
 
 use rekindle_kindle::from_kindle_title;
 use reqwest::{
     Client, StatusCode,
     header::{HeaderValue, RETRY_AFTER},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
 use tracing::{debug, error, info, warn};
 
@@ -42,6 +46,136 @@ struct SearchDocument {
     isbn: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct OpenLibraryBook {
+    pub open_library_key: String,
+    pub title: String,
+    pub authors: Vec<String>,
+    pub cover_id: Option<i64>,
+    pub first_publish_year: Option<i32>,
+    pub edition_count: Option<i32>,
+    pub isbns: Vec<String>,
+}
+
+impl From<SearchDocument> for OpenLibraryBook {
+    fn from(document: SearchDocument) -> Self {
+        Self {
+            open_library_key: document.key,
+            title: document.title,
+            authors: document.author_name,
+            cover_id: document.cover_i,
+            first_publish_year: document.first_publish_year,
+            edition_count: document.edition_count,
+            isbns: document.isbn,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum SearchError {
+    Request(reqwest::Error),
+    Http {
+        status: StatusCode,
+        retry_after: Option<Duration>,
+    },
+    Malformed(reqwest::Error),
+}
+
+impl fmt::Display for SearchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Request(error) => write!(formatter, "Open Library request failed: {error}"),
+            Self::Http { status, .. } => write!(formatter, "Open Library returned HTTP {status}"),
+            Self::Malformed(error) => {
+                write!(formatter, "Open Library response was malformed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SearchError {}
+
+#[derive(Clone)]
+pub struct OpenLibrary {
+    client: Client,
+    search_url: String,
+    pacer: Arc<Mutex<RequestPacer>>,
+}
+
+impl OpenLibrary {
+    pub fn new(client: Client) -> Self {
+        Self::with_search_url(client, SEARCH_URL)
+    }
+
+    fn with_search_url(client: Client, search_url: &str) -> Self {
+        Self {
+            client,
+            search_url: search_url.to_owned(),
+            pacer: Arc::new(Mutex::new(RequestPacer::default())),
+        }
+    }
+
+    pub async fn search(&self, query: &str) -> Result<Vec<OpenLibraryBook>, SearchError> {
+        self.request(query, "q", 10).await
+    }
+
+    async fn search_by_title(&self, title: &str) -> Result<Vec<OpenLibraryBook>, SearchError> {
+        self.request(title, "title", 1).await
+    }
+
+    async fn request(
+        &self,
+        query: &str,
+        query_parameter: &str,
+        limit: usize,
+    ) -> Result<Vec<OpenLibraryBook>, SearchError> {
+        self.wait().await;
+        debug!(query, "requesting Open Library metadata");
+        let started_at = Instant::now();
+        let response = self
+            .client
+            .get(&self.search_url)
+            .query(&[
+                (query_parameter, query),
+                ("limit", &limit.to_string()),
+                ("fields", SEARCH_FIELDS),
+            ])
+            .send()
+            .await
+            .map_err(SearchError::Request)?;
+        let status = response.status();
+        debug!(
+            status = %status,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Open Library responded"
+        );
+        if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| parse_retry_after(value, SystemTime::now()));
+            return Err(SearchError::Http {
+                status,
+                retry_after,
+            });
+        }
+
+        response
+            .json::<SearchResponse>()
+            .await
+            .map(|response| response.docs.into_iter().map(Into::into).collect())
+            .map_err(SearchError::Malformed)
+    }
+
+    async fn wait(&self) {
+        let request_at = {
+            let mut pacer = self.pacer.lock().unwrap_or_else(|error| error.into_inner());
+            pacer.reserve(Instant::now())
+        };
+        tokio::time::sleep_until(request_at.into()).await;
+    }
+}
+
 struct UpstreamFailure {
     message: String,
     retry_after: Option<Duration>,
@@ -66,11 +200,12 @@ struct RequestPacer {
 }
 
 impl RequestPacer {
-    async fn wait(&mut self) {
-        if let Some(last_request_at) = self.last_request_at {
-            tokio::time::sleep_until((last_request_at + MIN_REQUEST_INTERVAL).into()).await;
-        }
-        self.last_request_at = Some(Instant::now());
+    fn reserve(&mut self, now: Instant) -> Instant {
+        let request_at = self
+            .last_request_at
+            .map_or(now, |last| now.max(last + MIN_REQUEST_INTERVAL));
+        self.last_request_at = Some(request_at);
+        request_at
     }
 }
 
@@ -81,13 +216,13 @@ fn shortened_title(title: &str) -> Option<&str> {
     (!prefix.is_empty() && prefix != title).then_some(prefix)
 }
 
-pub fn spawn_enrichment_worker(database_url: String, client: Client) {
+pub fn spawn_enrichment_worker(database_url: String, open_library: OpenLibrary) {
     tokio::spawn(async move {
-        run_enrichment_worker(&database_url, &client).await;
+        run_enrichment_worker(&database_url, &open_library).await;
     });
 }
 
-async fn run_enrichment_worker(database_url: &str, client: &Client) {
+async fn run_enrichment_worker(database_url: &str, open_library: &OpenLibrary) {
     loop {
         let mut connection = match PgConnection::connect(database_url).await {
             Ok(connection) => connection,
@@ -103,7 +238,7 @@ async fn run_enrichment_worker(database_url: &str, client: &Client) {
             match try_acquire_leadership(&mut connection).await {
                 Ok(true) => {
                     info!("book enrichment worker acquired leadership");
-                    if let Err(error) = run_as_leader(&mut connection, client).await {
+                    if let Err(error) = run_as_leader(&mut connection, open_library).await {
                         error!(error = %error, "book enrichment worker lost its database session");
                     }
                     break;
@@ -127,11 +262,12 @@ async fn try_acquire_leadership(connection: &mut PgConnection) -> Result<bool, s
         .await
 }
 
-async fn run_as_leader(connection: &mut PgConnection, client: &Client) -> Result<(), sqlx::Error> {
-    let mut pacer = RequestPacer::default();
-
+async fn run_as_leader(
+    connection: &mut PgConnection,
+    open_library: &OpenLibrary,
+) -> Result<(), sqlx::Error> {
     loop {
-        match process_next_book(connection, client, &mut pacer).await? {
+        match process_next_book(connection, open_library).await? {
             WorkerStep::Idle => {
                 debug!(
                     sleep_seconds = IDLE_DELAY.as_secs(),
@@ -153,8 +289,7 @@ async fn run_as_leader(connection: &mut PgConnection, client: &Client) -> Result
 
 async fn process_next_book(
     connection: &mut PgConnection,
-    client: &Client,
-    pacer: &mut RequestPacer,
+    open_library: &OpenLibrary,
 ) -> Result<WorkerStep, sqlx::Error> {
     let book = sqlx::query_as::<_, PendingBook>(
         "SELECT id, kindle_title, retry_count FROM books \
@@ -175,7 +310,7 @@ async fn process_next_book(
     );
 
     let (title, _) = from_kindle_title(&book.kindle_title);
-    let outcome = search_with_fallback(client, SEARCH_URL, title, pacer).await;
+    let outcome = search_with_fallback(open_library, title).await;
 
     match outcome {
         SearchOutcome::Match(document) => {
@@ -209,13 +344,8 @@ async fn process_next_book(
     }
 }
 
-async fn search_with_fallback(
-    client: &Client,
-    search_url: &str,
-    title: &str,
-    pacer: &mut RequestPacer,
-) -> SearchOutcome {
-    let mut outcome = search(client, search_url, title, pacer).await;
+async fn search_with_fallback(open_library: &OpenLibrary, title: &str) -> SearchOutcome {
+    let mut outcome = search_one(open_library, title).await;
     if matches!(outcome, SearchOutcome::NoMatch)
         && let Some(fallback_title) = shortened_title(title)
     {
@@ -223,66 +353,39 @@ async fn search_with_fallback(
             query_title = title,
             fallback_title, "Open Library returned no match; trying shortened title"
         );
-        outcome = search(client, search_url, fallback_title, pacer).await;
+        outcome = search_one(open_library, fallback_title).await;
     }
     outcome
 }
 
-async fn search(
-    client: &Client,
-    search_url: &str,
-    title: &str,
-    pacer: &mut RequestPacer,
-) -> SearchOutcome {
-    pacer.wait().await;
-    debug!(query_title = title, "requesting Open Library metadata");
-    let started_at = Instant::now();
-    let response = match client
-        .get(search_url)
-        .query(&[("title", title), ("limit", "1"), ("fields", SEARCH_FIELDS)])
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            return SearchOutcome::Transient(UpstreamFailure {
-                message: format!("Open Library request failed: {error}"),
-                retry_after: None,
-            });
-        }
-    };
-
-    let status = response.status();
-    debug!(
-        status = %status,
-        elapsed_ms = started_at.elapsed().as_millis(),
-        "Open Library responded"
-    );
-    if is_transient_status(status) {
-        let retry_after = response
-            .headers()
-            .get(RETRY_AFTER)
-            .and_then(|value| parse_retry_after(value, SystemTime::now()));
-        return SearchOutcome::Transient(UpstreamFailure {
-            message: format!("Open Library returned HTTP {status}"),
-            retry_after,
-        });
-    }
-    if status.is_client_error() {
-        return SearchOutcome::Terminal(format!("Open Library returned HTTP {status}"));
-    }
-    if !status.is_success() {
-        return SearchOutcome::Terminal(format!("Open Library returned HTTP {status}"));
-    }
-
-    match response.json::<SearchResponse>().await {
-        Ok(response) => response
-            .docs
+async fn search_one(open_library: &OpenLibrary, title: &str) -> SearchOutcome {
+    match open_library.search_by_title(title).await {
+        Ok(books) => books
             .into_iter()
             .next()
-            .map_or(SearchOutcome::NoMatch, SearchOutcome::Match),
+            .map_or(SearchOutcome::NoMatch, |book| {
+                SearchOutcome::Match(SearchDocument {
+                    key: book.open_library_key,
+                    title: book.title,
+                    author_name: book.authors,
+                    cover_i: book.cover_id,
+                    first_publish_year: book.first_publish_year,
+                    edition_count: book.edition_count,
+                    isbn: book.isbns,
+                })
+            }),
+        Err(SearchError::Http {
+            status,
+            retry_after,
+        }) if is_transient_status(status) => SearchOutcome::Transient(UpstreamFailure {
+            message: format!("Open Library returned HTTP {status}"),
+            retry_after,
+        }),
+        Err(SearchError::Http { status, .. }) => {
+            SearchOutcome::Terminal(format!("Open Library returned HTTP {status}"))
+        }
         Err(error) => SearchOutcome::Transient(UpstreamFailure {
-            message: format!("Open Library response was malformed: {error}"),
+            message: error.to_string(),
             retry_after: None,
         }),
     }
@@ -328,7 +431,8 @@ async fn save_metadata(
     sqlx::query(
         "UPDATE books SET title = $2, authors = $3, open_library_key = $4, \
          cover_url = $5, first_publish_year = $6, edition_count = $7, isbns = $8, \
-         metadata_checked_at = NOW(), last_error = NULL, updated_at = NOW() WHERE id = $1",
+         metadata_checked_at = NOW(), last_error = NULL, updated_at = NOW() \
+         WHERE id = $1 AND metadata_checked_at IS NULL",
     )
     .bind(book.id)
     .bind(&document.title)
@@ -360,7 +464,7 @@ async fn mark_checked(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE books SET metadata_checked_at = NOW(), last_error = $2, updated_at = NOW() \
-         WHERE id = $1",
+         WHERE id = $1 AND metadata_checked_at IS NULL",
     )
     .bind(book.id)
     .bind(last_error)
@@ -378,7 +482,7 @@ async fn schedule_retry(
     sqlx::query(
         "UPDATE books SET retry_count = retry_count + 1, \
          next_attempt_at = NOW() + make_interval(secs => $2::double precision), \
-         last_error = $3, updated_at = NOW() WHERE id = $1",
+         last_error = $3, updated_at = NOW() WHERE id = $1 AND metadata_checked_at IS NULL",
     )
     .bind(book.id)
     .bind(delay.as_secs_f64())
@@ -409,9 +513,8 @@ mod tests {
     use reqwest::{Client, StatusCode, header::HeaderValue};
 
     use super::{
-        MAX_RETRY_DELAY, RequestPacer, SEARCH_FIELDS, SearchOutcome, from_kindle_title,
-        is_transient_status, parse_retry_after, retry_delay, search, search_with_fallback,
-        shortened_title,
+        MAX_RETRY_DELAY, OpenLibrary, SEARCH_FIELDS, SearchError, SearchOutcome, from_kindle_title,
+        is_transient_status, parse_retry_after, retry_delay, search_with_fallback, shortened_title,
     };
 
     async fn mock_open_library(
@@ -526,48 +629,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_limits_results_and_requests_only_stored_fields() {
-        let (url, requests, server) =
-            mock_open_library(vec![r#"{"docs":[{"key":"/works/OL1W","title":"A Book"}]}"#]).await;
-        let outcome = search(
-            &Client::new(),
-            &url,
-            "A Book: A Subtitle",
-            &mut RequestPacer::default(),
-        )
+    async fn search_returns_multiple_candidates() {
+        let (url, _, server) = mock_open_library(vec![
+            r#"{"docs":[{"key":"/works/OL1W","title":"First","author_name":["One"]},{"key":"/works/OL2W","title":"Second","edition_count":4}]}"#,
+        ])
         .await;
+        let books = OpenLibrary::with_search_url(Client::new(), &url)
+            .search("A Book")
+            .await
+            .expect("search should succeed");
         server.abort();
 
-        assert!(matches!(outcome, SearchOutcome::Match(_)));
+        assert_eq!(books.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_uses_general_query_limit_and_exact_fields() {
+        let (url, requests, server) = mock_open_library(vec![r#"{"docs":[]}"#]).await;
+        OpenLibrary::with_search_url(Client::new(), &url)
+            .search("A Book: A Subtitle")
+            .await
+            .expect("search should succeed");
+        server.abort();
+
         let requests = requests
             .lock()
             .expect("request capture lock should not be poisoned");
         let query = requests[0].query().expect("search should have a query");
-        assert!(query.contains("limit=1"));
-        assert!(query.contains(&format!("fields={}", SEARCH_FIELDS.replace(',', "%2C"))));
+        assert!(query.contains("q=A+Book%3A+A+Subtitle"));
+        assert!(query.contains("limit=10"));
+        assert_eq!(
+            query.split('&').find(|part| part.starts_with("fields=")),
+            Some(format!("fields={}", SEARCH_FIELDS.replace(',', "%2C")).as_str())
+        );
     }
 
     #[tokio::test]
-    async fn request_pacer_keeps_requests_at_least_one_second_apart() {
+    async fn cloned_services_share_request_pacing() {
         let (url, _, server) = mock_open_library(vec![r#"{"docs":[]}"#, r#"{"docs":[]}"#]).await;
-        let mut pacer = RequestPacer::default();
+        let open_library = OpenLibrary::with_search_url(Client::new(), &url);
+        let clone = open_library.clone();
 
         let started_at = Instant::now();
-        let _ = search(&Client::new(), &url, "First", &mut pacer).await;
-        let _ = search(&Client::new(), &url, "Second", &mut pacer).await;
+        let (first, second) = tokio::join!(open_library.search("First"), clone.search("Second"));
         server.abort();
 
+        assert!(first.is_ok() && second.is_ok());
         assert!(started_at.elapsed() >= Duration::from_secs(1));
     }
 
     #[tokio::test]
-    async fn malformed_response_is_transient() {
+    async fn malformed_response_is_classified() {
         let (url, _, server) = mock_open_library(vec!["not JSON"]).await;
 
-        let outcome = search(&Client::new(), &url, "A Book", &mut RequestPacer::default()).await;
+        let outcome = OpenLibrary::with_search_url(Client::new(), &url)
+            .search("A Book")
+            .await;
         server.abort();
 
-        assert!(matches!(outcome, SearchOutcome::Transient(_)));
+        assert!(matches!(outcome, Err(SearchError::Malformed(_))));
+    }
+
+    #[tokio::test]
+    async fn upstream_http_failure_is_classified() {
+        let app = Router::new().fallback(|| async { StatusCode::BAD_GATEWAY });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock server should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock server should run");
+        });
+
+        let outcome =
+            OpenLibrary::with_search_url(Client::new(), &format!("http://{address}/search.json"))
+                .search("A Book")
+                .await;
+        server.abort();
+
+        assert!(matches!(
+            outcome,
+            Err(SearchError::Http {
+                status: StatusCode::BAD_GATEWAY,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_results_succeed() {
+        let (url, _, server) = mock_open_library(vec![r#"{"docs":[]}"#]).await;
+
+        let outcome = OpenLibrary::with_search_url(Client::new(), &url)
+            .search("Unknown")
+            .await;
+        server.abort();
+
+        assert!(matches!(outcome, Ok(books) if books.is_empty()));
     }
 
     #[tokio::test]
@@ -579,10 +741,8 @@ mod tests {
         .await;
 
         let outcome = search_with_fallback(
-            &Client::new(),
-            &url,
+            &OpenLibrary::with_search_url(Client::new(), &url),
             "A Book: A Subtitle",
-            &mut RequestPacer::default(),
         )
         .await;
         server.abort();
@@ -606,10 +766,8 @@ mod tests {
             mock_open_library(vec![r#"{"docs":[]}"#, r#"{"docs":[]}"#]).await;
 
         let outcome = search_with_fallback(
-            &Client::new(),
-            &url,
+            &OpenLibrary::with_search_url(Client::new(), &url),
             "A Book: A Subtitle",
-            &mut RequestPacer::default(),
         )
         .await;
         server.abort();

@@ -8,6 +8,7 @@ services:
     environment:
       DATABASE_URL: postgres://rekindle:rekindle@postgres:5432/rekindle
       OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:-}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     depends_on:
       postgres:
         condition: service_healthy
