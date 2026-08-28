@@ -3,6 +3,7 @@ mod features;
 use std::time::Duration;
 
 use axum::{Router, http::StatusCode};
+use features::books::{BooksState, router as books_router};
 use features::clippings::{ClippingsState, router as clippings_router};
 use sqlx::postgres::PgPoolOptions;
 use tower_http::services::ServeDir;
@@ -54,6 +55,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     rekindle_openlibrary::spawn_enrichment_worker(database_url, open_library);
 
     let api = Router::new()
+        .nest("/books", books_router(BooksState { pool: pool.clone() }))
         .nest("/clippings", clippings_router(ClippingsState { pool }))
         .fallback(not_found);
     let app = Router::new()

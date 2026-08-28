@@ -1,0 +1,5 @@
+/target
+/.git
+/app/web/node_modules
+/app/web/.svelte-kit
+/app/web/build
