@@ -1,6 +1,6 @@
-# Rekindle web
+# BookReplay web
 
-SvelteKit frontend for importing a Kindle `My Clippings.txt` file into the Rekindle API.
+SvelteKit frontend for importing a Kindle `My Clippings.txt` file into the BookReplay API.
 
 ## Developing
 
@@ -15,7 +15,7 @@ Vite proxies `/api` requests to `http://localhost:3000`, matching the same-origi
 
 ## Production
 
-The Docker build prerenders this app into `build/`. The Rekindle Axum server serves those files and the `/api` routes from the same origin:
+The Docker build prerenders this app into `build/`. The BookReplay Axum server serves those files and the `/api` routes from the same origin:
 
 ```sh
 docker compose up --build

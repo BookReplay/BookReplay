@@ -1,5 +1,5 @@
 [package]
-name = "rekindle-openlibrary"
+name = "bookreplay-openlibrary"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-rekindle-kindle.workspace = true
+bookreplay-kindle.workspace = true
 
 [dev-dependencies]
 axum.workspace = true

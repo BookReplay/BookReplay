@@ -11,6 +11,7 @@ use super::{
     ReviewsState, model,
     scheduler::{ReviewRating, schedule_review},
 };
+use crate::features::auth::AuthSession;
 
 #[derive(Deserialize)]
 pub struct SessionQuery {
@@ -31,10 +32,12 @@ type ApiError = (StatusCode, Json<ErrorResponse>);
 
 pub async fn session(
     State(state): State<ReviewsState>,
+    auth_session: AuthSession,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Vec<model::SessionHighlight>>, ApiError> {
     let limit = query.limit.unwrap_or(10).clamp(1, 100);
-    let highlights = model::session(&state.pool, limit, OffsetDateTime::now_utc())
+    let user_id = authenticated_user_id(auth_session)?;
+    let highlights = model::session(&state.pool, user_id, limit, OffsetDateTime::now_utc())
         .await
         .map_err(internal_error)?;
     Ok(Json(highlights))
@@ -42,11 +45,13 @@ pub async fn session(
 
 pub async fn review(
     State(state): State<ReviewsState>,
+    auth_session: AuthSession,
     Path(highlight_id): Path<i64>,
     Json(request): Json<ReviewRequest>,
 ) -> Result<Json<model::ReviewResponse>, ApiError> {
+    let user_id = authenticated_user_id(auth_session)?;
     let mut transaction = state.pool.begin().await.map_err(internal_error)?;
-    let state = model::find_for_update(&mut transaction, highlight_id)
+    let state = model::find_for_update(&mut transaction, user_id, highlight_id)
         .await
         .map_err(internal_error)?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "highlight not found"))?;
@@ -67,6 +72,7 @@ pub async fn review(
     );
     let response = model::save_review(
         &mut transaction,
+        user_id,
         highlight_id,
         &state,
         request.rating,
@@ -87,4 +93,11 @@ fn internal_error(error: sqlx::Error) -> ApiError {
 
 fn api_error(status: StatusCode, message: &'static str) -> ApiError {
     (status, Json(ErrorResponse { message }))
+}
+
+fn authenticated_user_id(auth_session: AuthSession) -> Result<i16, ApiError> {
+    auth_session
+        .user
+        .map(|user| user.id)
+        .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication required"))
 }

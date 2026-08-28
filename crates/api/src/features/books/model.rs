@@ -1,4 +1,4 @@
-use rekindle_openlibrary::OpenLibraryBook;
+use bookreplay_openlibrary::OpenLibraryBook;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -11,20 +11,22 @@ pub struct BookSummary {
     pub highlight_count: i64,
 }
 
-pub async fn all(pool: &PgPool) -> Result<Vec<BookSummary>, sqlx::Error> {
+pub async fn all(pool: &PgPool, user_id: i16) -> Result<Vec<BookSummary>, sqlx::Error> {
     sqlx::query_as(
         "SELECT books.id, books.title, books.authors, books.cover_url, \
                 COUNT(clippings.id) AS highlight_count \
          FROM books JOIN clippings ON clippings.book_id = books.id \
-         WHERE btrim(clippings.content) <> '' \
+         WHERE clippings.user_id = $1 AND btrim(clippings.content) <> '' \
          GROUP BY books.id ORDER BY books.title",
     )
+    .bind(user_id)
     .fetch_all(pool)
     .await
 }
 
 pub async fn identify(
     pool: &PgPool,
+    user_id: i16,
     book_id: i64,
     book: &OpenLibraryBook,
 ) -> Result<Option<BookSummary>, sqlx::Error> {
@@ -42,7 +44,7 @@ pub async fn identify(
          SELECT updated.id, updated.title, updated.authors, updated.cover_url, \
                 COUNT(clippings.id) AS highlight_count \
          FROM updated LEFT JOIN clippings ON clippings.book_id = updated.id \
-             AND btrim(clippings.content) <> '' \
+             AND clippings.user_id = $9 AND btrim(clippings.content) <> '' \
          GROUP BY updated.id, updated.title, updated.authors, updated.cover_url",
     )
     .bind(book_id)
@@ -53,6 +55,7 @@ pub async fn identify(
     .bind(book.first_publish_year)
     .bind(book.edition_count)
     .bind(&book.isbns)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
 }

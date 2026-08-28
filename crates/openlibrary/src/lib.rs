@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use rekindle_kindle::from_kindle_title;
+use bookreplay_kindle::from_kindle_title;
 use reqwest::{
     Client, StatusCode,
     header::{HeaderValue, RETRY_AFTER},

@@ -26,9 +26,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 app
 WORKDIR /app
-COPY --from=build /app/target/release/rekindle-api /usr/local/bin/rekindle-api
+COPY --from=build /app/target/release/bookreplay /usr/local/bin/bookreplay
 COPY --from=web-build /app/build ./app/web/build
 
 USER app
 EXPOSE 3000
-CMD ["rekindle-api"]
+CMD ["bookreplay"]

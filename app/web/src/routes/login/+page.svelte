@@ -26,7 +26,7 @@
 
 			window.location.assign('/');
 		} catch {
-			message = 'Could not reach Rekindle. Check your connection and try again.';
+			message = 'Could not reach BookReplay. Check your connection and try again.';
 		} finally {
 			submitting = false;
 		}
@@ -34,8 +34,8 @@
 </script>
 
 <svelte:head>
-	<title>Sign in · Rekindle</title>
-	<meta name="description" content="Sign in to your Rekindle library" />
+	<title>Sign in · BookReplay</title>
+	<meta name="description" content="Sign in to your BookReplay library" />
 </svelte:head>
 
 <a class="absolute top-3 left-3 z-10 -translate-y-[200%] rounded-md bg-ink px-3 py-2 text-cream focus-visible:translate-y-0" href="#main-content">Skip to content</a>
@@ -43,7 +43,7 @@
 <main id="main-content" class="mx-auto grid min-h-screen w-[calc(100%-2rem)] max-w-6xl place-items-center py-10 max-sm:w-[calc(100%-1.5rem)]">
 	<section class="w-full max-w-[34rem] rounded-xl border border-line bg-cream p-[clamp(1.5rem,6vw,3.5rem)] shadow-[0_1.25rem_3rem_rgb(80_65_40/10%)]" aria-labelledby="login-title">
 		<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Your library awaits</p>
-		<h1 id="login-title" class="mb-4 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Sign in to Rekindle</h1>
+		<h1 id="login-title" class="mb-4 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Sign in to BookReplay</h1>
 		<p class="m-0 leading-relaxed text-muted">Return to your books and highlights.</p>
 
 		<form class="mt-9 grid gap-5" onsubmit={login}>

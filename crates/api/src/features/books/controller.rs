@@ -3,11 +3,12 @@ use axum::{
     extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
 };
-use rekindle_openlibrary::OpenLibraryBook;
+use bookreplay_openlibrary::OpenLibraryBook;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use super::{BooksState, model};
+use crate::features::auth::AuthSession;
 
 #[derive(Deserialize)]
 pub struct SearchQuery {
@@ -23,9 +24,14 @@ type ApiError = (StatusCode, Json<ErrorResponse>);
 
 pub async fn get_all(
     State(state): State<BooksState>,
+    auth_session: AuthSession,
 ) -> Result<Json<Vec<model::BookSummary>>, StatusCode> {
     info!("fetching all books");
-    let books = model::all(&state.pool).await.map_err(|error| {
+    let user_id = auth_session
+        .user
+        .map(|user| user.id)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let books = model::all(&state.pool, user_id).await.map_err(|error| {
         error!(error = %error, "failed to fetch books from database");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -56,6 +62,7 @@ pub async fn search(
 
 pub async fn identify(
     State(state): State<BooksState>,
+    auth_session: AuthSession,
     Path(book_id): Path<i64>,
     candidate: Result<Json<OpenLibraryBook>, JsonRejection>,
 ) -> Result<Json<model::BookSummary>, ApiError> {
@@ -63,7 +70,11 @@ pub async fn identify(
         candidate.map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid book identification"))?;
     validate_candidate(&candidate)?;
 
-    model::identify(&state.pool, book_id, &candidate)
+    let user_id = auth_session
+        .user
+        .map(|user| user.id)
+        .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication required"))?;
+    model::identify(&state.pool, user_id, book_id, &candidate)
         .await
         .map_err(|error| {
             error!(book_id, error = %error, "failed to identify book");
@@ -108,7 +119,7 @@ fn api_error(status: StatusCode, message: &str) -> ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use rekindle_openlibrary::OpenLibraryBook;
+    use bookreplay_openlibrary::OpenLibraryBook;
 
     use super::validate_candidate;
 

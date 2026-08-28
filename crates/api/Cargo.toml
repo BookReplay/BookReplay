@@ -1,5 +1,5 @@
 [package]
-name = "rekindle-api"
+name = "bookreplay-api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,9 +19,9 @@ tower-sessions-sqlx-store.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-rekindle-core.workspace = true
-rekindle-kindle.workspace = true
-rekindle-openlibrary.workspace = true
+bookreplay-core.workspace = true
+bookreplay-kindle.workspace = true
+bookreplay-openlibrary.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

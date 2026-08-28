@@ -5,7 +5,7 @@ use axum::{
     Router,
     routing::{get, put},
 };
-use rekindle_openlibrary::OpenLibrary;
+use bookreplay_openlibrary::OpenLibrary;
 use sqlx::PgPool;
 
 #[derive(Clone)]

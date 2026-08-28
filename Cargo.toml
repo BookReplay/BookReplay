@@ -1,15 +1,15 @@
 [package]
-name = "rekindle"
+name = "bookreplay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "rekindle-api"
+name = "bookreplay"
 path = "src/main.rs"
 
 [dependencies]
-rekindle-api = { path = "crates/api" }
+bookreplay-api = { path = "crates/api" }
 tokio.workspace = true
 
 [workspace]
@@ -38,6 +38,6 @@ tower-sessions-sqlx-store = { version = "0.15.0", features = ["postgres"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
-rekindle-core = { path = "crates/core" }
-rekindle-kindle = { path = "crates/kindle" }
-rekindle-openlibrary = { path = "crates/openlibrary" }
+bookreplay-core = { path = "crates/core" }
+bookreplay-kindle = { path = "crates/kindle" }
+bookreplay-openlibrary = { path = "crates/openlibrary" }

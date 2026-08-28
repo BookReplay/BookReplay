@@ -22,7 +22,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rekindle_api=info")),
+                .unwrap_or_else(|_| EnvFilter::new("bookreplay_api=info")),
         )
         .init();
 
@@ -51,7 +51,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cookie_secure =
         std::env::var("SESSION_COOKIE_SECURE").map_or(Ok(false), |value| value.parse::<bool>())?;
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_name("rekindle.sid")
+        .with_name("bookreplay.sid")
         .with_http_only(true)
         .with_same_site(SameSite::Strict)
         .with_path("/")
@@ -66,10 +66,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .filter(|email| !email.trim().is_empty());
     let user_agent = contact_email.as_ref().map_or_else(
-        || concat!("rekindle-api/", env!("CARGO_PKG_VERSION")).to_owned(),
+        || concat!("bookreplay-api/", env!("CARGO_PKG_VERSION")).to_owned(),
         |email| {
             format!(
-                "rekindle-api/{} ({})",
+                "bookreplay-api/{} ({})",
                 env!("CARGO_PKG_VERSION"),
                 email.trim()
             )
@@ -85,8 +85,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .user_agent(user_agent)
         .timeout(Duration::from_secs(10))
         .build()?;
-    let open_library = rekindle_openlibrary::OpenLibrary::new(open_library_client);
-    rekindle_openlibrary::spawn_enrichment_worker(database_url, open_library.clone());
+    let open_library = bookreplay_openlibrary::OpenLibrary::new(open_library_client);
+    bookreplay_openlibrary::spawn_enrichment_worker(database_url, open_library.clone());
 
     let api = Router::new()
         .nest("/auth", features::auth::router(auth_backend))

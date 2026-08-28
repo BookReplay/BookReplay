@@ -22,6 +22,7 @@ pub struct Clipping {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct EnrichedClipping {
+    pub id: i64,
     #[sqlx(flatten)]
     pub book: Book,
     pub metadata: String,

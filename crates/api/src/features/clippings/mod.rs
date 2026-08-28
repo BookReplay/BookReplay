@@ -4,7 +4,7 @@ mod view;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use sqlx::PgPool;
 
@@ -17,5 +17,6 @@ pub fn router(state: ClippingsState) -> Router {
     Router::new()
         .route("/", get(controller::get_all))
         .route("/import", post(controller::import))
+        .route("/{clipping_id}", patch(controller::update))
         .with_state(state)
 }

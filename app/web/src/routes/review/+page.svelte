@@ -61,7 +61,7 @@
 </script>
 
 <svelte:head>
-	<title>Review Highlights · Rekindle</title>
+	<title>Review Highlights · BookReplay</title>
 	<meta name="description" content="Revisit and schedule your Kindle highlights" />
 </svelte:head>
 
@@ -69,7 +69,7 @@
 
 <main id="main-content" aria-busy={loading || submitting} class="mx-auto min-h-screen w-[calc(100%-2rem)] max-w-4xl pt-5 pb-20 max-sm:w-[calc(100%-1.5rem)]">
 	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
-		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/">Rekindle</a>
+		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/">BookReplay</a>
 		<div class="flex items-center gap-4">
 			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/">← Your bookshelf</a>
 			<LogoutButton />

@@ -45,6 +45,7 @@ pub struct ReviewResponse {
 
 pub async fn session(
     pool: &PgPool,
+    user_id: i16,
     limit: usize,
     now: OffsetDateTime,
 ) -> Result<Vec<SessionHighlight>, sqlx::Error> {
@@ -53,16 +54,17 @@ pub async fn session(
         "(SELECT c.id AS highlight_id, b.id AS book_id, b.title AS book_title, b.authors, \
                  c.content AS highlight_text, c.next_review_at, c.review_count, c.archived_at \
           FROM clippings c JOIN books b ON b.id = c.book_id \
-          WHERE c.archived_at IS NULL AND c.next_review_at <= $1 AND btrim(c.content) <> '' \
-          ORDER BY c.next_review_at, c.id LIMIT $2) \
+          WHERE c.user_id = $1 AND c.archived_at IS NULL AND c.next_review_at <= $2 AND btrim(c.content) <> '' \
+          ORDER BY c.next_review_at, c.id LIMIT $3) \
          UNION ALL \
          (SELECT c.id AS highlight_id, b.id AS book_id, b.title AS book_title, b.authors, \
                  c.content AS highlight_text, c.next_review_at, c.review_count, c.archived_at \
           FROM clippings c JOIN books b ON b.id = c.book_id \
-          WHERE c.archived_at IS NULL AND c.review_count = 0 AND c.next_review_at IS NULL \
+          WHERE c.user_id = $1 AND c.archived_at IS NULL AND c.review_count = 0 AND c.next_review_at IS NULL \
                 AND btrim(c.content) <> '' \
-          ORDER BY c.id LIMIT $2)",
+          ORDER BY c.id LIMIT $3)",
     )
+    .bind(user_id)
     .bind(now)
     .bind(candidate_limit)
     .fetch_all(pool)
@@ -73,19 +75,22 @@ pub async fn session(
 
 pub async fn find_for_update(
     transaction: &mut Transaction<'_, Postgres>,
+    user_id: i16,
     highlight_id: i64,
 ) -> Result<Option<ReviewState>, sqlx::Error> {
     sqlx::query_as(
         "SELECT review_count, current_interval_days, archived_at \
-         FROM clippings WHERE id = $1 AND btrim(content) <> '' FOR UPDATE",
+         FROM clippings WHERE id = $1 AND user_id = $2 AND btrim(content) <> '' FOR UPDATE",
     )
     .bind(highlight_id)
+    .bind(user_id)
     .fetch_optional(&mut **transaction)
     .await
 }
 
 pub async fn save_review(
     transaction: &mut Transaction<'_, Postgres>,
+    user_id: i16,
     highlight_id: i64,
     state: &ReviewState,
     rating: ReviewRating,
@@ -111,13 +116,14 @@ pub async fn save_review(
              first_seen_at = COALESCE(first_seen_at, $2), last_reviewed_at = $2, \
              next_review_at = $3, review_count = review_count + 1, \
              current_interval_days = COALESCE($4, current_interval_days), archived_at = $5 \
-         WHERE id = $1",
+         WHERE id = $1 AND user_id = $6",
     )
     .bind(highlight_id)
     .bind(now)
     .bind(schedule.next_review_at)
     .bind(schedule.interval_days)
     .bind(archived_at)
+    .bind(user_id)
     .execute(&mut **transaction)
     .await?;
 

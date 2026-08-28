@@ -1,4 +1,4 @@
-use rekindle_core::Clipping;
+use bookreplay_core::Clipping;
 
 pub fn from_kindle_title(value: &str) -> (&str, Vec<&str>) {
     let Some((title, authors)) = value.rsplit_once(" (") else {
@@ -37,7 +37,7 @@ pub fn parse_clippings(file: &str) -> Vec<Clipping> {
 
 #[cfg(test)]
 mod tests {
-    use rekindle_core::Clipping;
+    use bookreplay_core::Clipping;
 
     use super::{from_kindle_title, parse_clippings};
 

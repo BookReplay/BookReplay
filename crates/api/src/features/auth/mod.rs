@@ -16,7 +16,7 @@ use tracing::error;
 
 const OWNER_ID: i16 = 1;
 const INVALID_LOGIN: &str = "invalid email or password";
-const DUMMY_PASSWORD: &str = "rekindle authentication timing password";
+const DUMMY_PASSWORD: &str = "bookreplay authentication timing password";
 
 pub type AuthSession = axum_login::AuthSession<AuthBackend>;
 
@@ -38,7 +38,7 @@ impl AuthBackend {
 
 #[derive(Clone, Debug, FromRow)]
 pub struct Owner {
-    id: i16,
+    pub(crate) id: i16,
     password_hash: String,
 }
 
@@ -408,7 +408,7 @@ mod tests {
     fn registration_normalizes_email_and_name_without_trimming_password() {
         let registration = Registration::try_from(register_request(
             "  OWNER@Example.COM  ",
-            "  Rekindle Owner  ",
+            "  BookReplay Owner  ",
             "  password  ",
         ))
         .expect("registration should be valid");
@@ -417,7 +417,7 @@ mod tests {
             registration,
             Registration {
                 email: "owner@example.com".to_owned(),
-                name: "Rekindle Owner".to_owned(),
+                name: "BookReplay Owner".to_owned(),
                 password: "  password  ".to_owned(),
             }
         );

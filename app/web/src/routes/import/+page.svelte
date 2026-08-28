@@ -52,15 +52,15 @@
 </script>
 
 <svelte:head>
-	<title>Import Clippings · Rekindle</title>
-	<meta name="description" content="Import a Kindle clippings file into Rekindle" />
+	<title>Import Clippings · BookReplay</title>
+	<meta name="description" content="Import a Kindle clippings file into BookReplay" />
 </svelte:head>
 
 <a class="absolute top-3 left-3 z-10 -translate-y-[200%] rounded-md bg-ink px-3 py-2 text-cream focus-visible:translate-y-0" href="#main-content">Skip to content</a>
 
 <main id="main-content" class="mx-auto min-h-screen w-[calc(100%-2rem)] max-w-6xl pt-5 pb-20 max-sm:w-[calc(100%-1.5rem)]">
 	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
-		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">Rekindle</a>
+		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">BookReplay</a>
 		<div class="flex items-center gap-4">
 			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">← Your bookshelf</a>
 			<LogoutButton />

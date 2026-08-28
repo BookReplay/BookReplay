@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgres://rekindle:rekindle@postgres:5432/rekindle
+      DATABASE_URL: postgres://bookreplay:bookreplay@postgres:5432/bookreplay
       OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:-}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     depends_on:
@@ -22,11 +22,11 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: rekindle
-      POSTGRES_USER: rekindle
-      POSTGRES_PASSWORD: rekindle
+      POSTGRES_DB: bookreplay
+      POSTGRES_USER: bookreplay
+      POSTGRES_PASSWORD: bookreplay
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rekindle -d rekindle"]
+      test: ["CMD-SHELL", "pg_isready -U bookreplay -d bookreplay"]
       interval: 5s
       timeout: 5s
       retries: 5

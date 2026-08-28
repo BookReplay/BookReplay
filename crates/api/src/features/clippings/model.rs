@@ -1,17 +1,35 @@
 use std::collections::HashMap;
 
-use rekindle_core::{Clipping, EnrichedClipping};
-use rekindle_kindle::from_kindle_title;
+use bookreplay_core::{Clipping, EnrichedClipping};
+use bookreplay_kindle::from_kindle_title;
 use sqlx::PgPool;
 
-pub async fn all(pool: &PgPool) -> Result<Vec<EnrichedClipping>, sqlx::Error> {
+pub async fn all(pool: &PgPool, user_id: i16) -> Result<Vec<EnrichedClipping>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT books.id, books.kindle_title, books.title, books.authors, \
+        "SELECT clippings.id, books.id, books.kindle_title, books.title, books.authors, \
                 books.open_library_key, books.cover_url, books.first_publish_year, \
                 books.edition_count, books.isbns, clippings.metadata, clippings.content \
-         FROM clippings JOIN books ON books.id = clippings.book_id ORDER BY clippings.id",
+         FROM clippings JOIN books ON books.id = clippings.book_id \
+         WHERE clippings.user_id = $1 ORDER BY clippings.id",
     )
+    .bind(user_id)
     .fetch_all(pool)
+    .await
+}
+
+pub async fn update_content(
+    pool: &PgPool,
+    user_id: i16,
+    clipping_id: i64,
+    content: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE clippings SET content = $1 WHERE id = $2 AND user_id = $3 RETURNING content",
+    )
+    .bind(content)
+    .bind(clipping_id)
+    .bind(user_id)
+    .fetch_optional(pool)
     .await
 }
 
@@ -20,7 +38,11 @@ pub struct ImportResult {
     pub books: usize,
 }
 
-pub async fn insert(pool: &PgPool, clippings: &[Clipping]) -> Result<ImportResult, sqlx::Error> {
+pub async fn insert(
+    pool: &PgPool,
+    user_id: i16,
+    clippings: &[Clipping],
+) -> Result<ImportResult, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     let mut book_ids = HashMap::new();
     let mut inserted_books = 0;
@@ -51,9 +73,10 @@ pub async fn insert(pool: &PgPool, clippings: &[Clipping]) -> Result<ImportResul
         };
 
         inserted_clippings += sqlx::query(
-            "INSERT INTO clippings (book_id, metadata, content) VALUES ($1, $2, $3) \
-             ON CONFLICT (book_id, metadata, content) DO NOTHING",
+            "INSERT INTO clippings (user_id, book_id, metadata, content) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (user_id, book_id, metadata, content) DO NOTHING",
         )
+        .bind(user_id)
         .bind(book_id)
         .bind(&clipping.metadata)
         .bind(&clipping.content)

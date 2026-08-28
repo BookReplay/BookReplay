@@ -1,8 +1,8 @@
 [package]
-name = "rekindle-kindle"
+name = "bookreplay-kindle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rekindle-core.workspace = true
+bookreplay-core.workspace = true
