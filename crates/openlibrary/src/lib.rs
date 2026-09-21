@@ -84,11 +84,9 @@ pub enum SearchError {
 impl fmt::Display for SearchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Request(error) => write!(formatter, "Open Library request failed: {error}"),
+            Self::Request(_) => formatter.write_str("Open Library request failed"),
             Self::Http { status, .. } => write!(formatter, "Open Library returned HTTP {status}"),
-            Self::Malformed(error) => {
-                write!(formatter, "Open Library response was malformed: {error}")
-            }
+            Self::Malformed(_) => formatter.write_str("Open Library response was malformed"),
         }
     }
 }
@@ -130,7 +128,7 @@ impl OpenLibrary {
         limit: usize,
     ) -> Result<Vec<OpenLibraryBook>, SearchError> {
         self.wait().await;
-        debug!(query, "requesting Open Library metadata");
+        debug!("requesting Open Library metadata");
         let started_at = Instant::now();
         let response = self
             .client
@@ -226,8 +224,8 @@ async fn run_enrichment_worker(database_url: &str, open_library: &OpenLibrary) {
     loop {
         let mut connection = match PgConnection::connect(database_url).await {
             Ok(connection) => connection,
-            Err(error) => {
-                error!(error = %error, "book enrichment worker failed to connect to database");
+            Err(_error) => {
+                error!("book enrichment worker failed to connect to database");
                 tokio::time::sleep(IDLE_DELAY).await;
                 continue;
             }
@@ -238,14 +236,14 @@ async fn run_enrichment_worker(database_url: &str, open_library: &OpenLibrary) {
             match try_acquire_leadership(&mut connection).await {
                 Ok(true) => {
                     info!("book enrichment worker acquired leadership");
-                    if let Err(error) = run_as_leader(&mut connection, open_library).await {
-                        error!(error = %error, "book enrichment worker lost its database session");
+                    if let Err(_error) = run_as_leader(&mut connection, open_library).await {
+                        error!("book enrichment worker lost its database session");
                     }
                     break;
                 }
                 Ok(false) => tokio::time::sleep(IDLE_DELAY).await,
-                Err(error) => {
-                    error!(error = %error, "book enrichment worker leadership check failed");
+                Err(_error) => {
+                    error!("book enrichment worker leadership check failed");
                     break;
                 }
             }
@@ -304,7 +302,6 @@ async fn process_next_book(
 
     info!(
         book_id = book.id,
-        kindle_title = %book.kindle_title,
         retry_count = book.retry_count,
         "processing book enrichment backlog item"
     );
@@ -321,7 +318,6 @@ async fn process_next_book(
             mark_checked(connection, &book, None).await?;
             warn!(
                 book_id = book.id,
-                kindle_title = %book.kindle_title,
                 "book enrichment completed without an Open Library match"
             );
             Ok(WorkerStep::Processed)
@@ -333,12 +329,7 @@ async fn process_next_book(
         }
         SearchOutcome::Terminal(message) => {
             mark_checked(connection, &book, Some(&message)).await?;
-            error!(
-                book_id = book.id,
-                kindle_title = %book.kindle_title,
-                error = %message,
-                "book enrichment failed permanently"
-            );
+            error!(book_id = book.id, "book enrichment failed permanently");
             Ok(WorkerStep::Processed)
         }
     }
@@ -349,10 +340,7 @@ async fn search_with_fallback(open_library: &OpenLibrary, title: &str) -> Search
     if matches!(outcome, SearchOutcome::NoMatch)
         && let Some(fallback_title) = shortened_title(title)
     {
-        warn!(
-            query_title = title,
-            fallback_title, "Open Library returned no match; trying shortened title"
-        );
+        warn!("Open Library returned no match; trying shortened title");
         outcome = search_one(open_library, fallback_title).await;
     }
     outcome
@@ -444,13 +432,13 @@ async fn save_metadata(
     .bind(&document.isbn)
     .execute(connection)
     .await
-    .inspect_err(|error| {
-        error!(book_id = book.id, error = %error, "failed to save enriched book metadata");
+    .inspect_err(|_error| {
+        error!(book_id = book.id, "failed to save enriched book metadata");
     })?;
 
     info!(
         book_id = book.id,
-        kindle_title = %book.kindle_title,
+
         open_library_key = %document.key,
         "book enrichment completed"
     );
@@ -492,10 +480,8 @@ async fn schedule_retry(
 
     warn!(
         book_id = book.id,
-        kindle_title = %book.kindle_title,
         retry_count = book.retry_count + 1,
         retry_in_seconds = delay.as_secs_f64(),
-        error = %message,
         "book enrichment scheduled for retry"
     );
     Ok(())

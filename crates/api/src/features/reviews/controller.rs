@@ -86,8 +86,8 @@ pub async fn review(
     Ok(Json(response))
 }
 
-fn internal_error(error: sqlx::Error) -> ApiError {
-    error!(error = %error, "highlight review request failed");
+fn internal_error(_error: sqlx::Error) -> ApiError {
+    error!("highlight review request failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, "review request failed")
 }
 

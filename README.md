@@ -19,7 +19,7 @@ The initial container target is **Linux x86-64 (`linux/amd64`) only**. ARM64, in
    openssl rand -hex 32
    ```
 
-   Edit `.env` and paste the generated value into `POSTGRES_PASSWORD`. Leave the `${POSTGRES_PASSWORD}` reference in `DATABASE_URL`; Compose expands it automatically. Set `BOOKREPLAY_IMAGE` to the published version you selected (or an immutable `image@sha256:…` digest). An empty database password or URL makes Compose fail before starting containers. Optionally set `OPEN_LIBRARY_CONTACT_EMAIL` to your contact address.
+   Edit `.env` and paste the generated value into `POSTGRES_PASSWORD`. Generate a **second** value with `openssl rand -hex 32` for `SETUP_SECRET`; registration is disabled without it. Leave the `${POSTGRES_PASSWORD}` reference in `DATABASE_URL`; Compose expands it automatically. Set `BOOKREPLAY_IMAGE` to the published version you selected (or an immutable `image@sha256:…` digest). An empty database password or URL makes Compose fail before starting containers. Optionally set `OPEN_LIBRARY_CONTACT_EMAIL` to your contact address.
 3. For a published release:
 
    ```sh
@@ -42,7 +42,7 @@ The initial container target is **Linux x86-64 (`linux/amd64`) only**. ARM64, in
    ssh -N -L 3000:127.0.0.1:3000 user@your-server
    ```
 
-   The application binds only to the server's loopback interface. Keep setup private: the first visitor creates the owner account. Register with your name, email, and a password of 12–128 bytes, then log in. For access through an HTTPS reverse proxy, set `SESSION_COOKIE_SECURE=true` before exposing the instance; a tested proxy recipe is still tracked in P0 2 of [the checklist](SELF_HOSTING_CHECKLIST.md).
+   Compose publishes the application only on the server's loopback interface. Register with the setup secret, name, email, and a password of 12–128 bytes, then log in. Remove `SETUP_SECRET` from `.env` after registration and recreate the app with `docker compose up -d --force-recreate bookreplay`. For remote access, follow the tested [HTTPS setup and owner recovery guide](deploy/SECURITY.md), setting both `APP_ORIGIN=https://your-domain` and `SESSION_COOKIE_SECURE=true` before exposing the instance.
 5. Open **Import**, select your Kindle's `documents/My Clippings.txt`, and import it. Return to the library to verify the highlights. Metadata enrichment happens in the background and needs outbound access to Open Library.
 6. Verify persistence:
 
@@ -80,7 +80,9 @@ Compose reads `.env` beside `compose.yaml`. The Rust process does **not** load `
 | `DATABASE_URL` | Required, no API default. PostgreSQL URI such as `postgresql://bookreplay:PASSWORD@postgres:5432/bookreplay`. The example expands `POSTGRES_PASSWORD`; its database/user must match Compose. For arbitrary passwords, percent-encode reserved URI characters in the URL, while leaving the PostgreSQL password literal. Hex avoids both URI escaping and Compose `$` interpolation issues. |
 | `OPEN_LIBRARY_CONTACT_EMAIL` | Optional; default empty. A contact email included in the Open Library HTTP User-Agent. Empty uses conservative request pacing. |
 | `SESSION_COOKIE_SECURE` | Exactly `true` or `false`; default `false`. Use `false` for localhost or SSH-tunnel HTTP and `true` for HTTPS. A secure cookie cannot authenticate an ordinary HTTP connection. |
-| `RUST_LOG` | Default `bookreplay_api=info`. A Rust tracing filter, e.g. `warn,bookreplay_api=info,bookreplay_openlibrary=info`; levels include `off`, `error`, `warn`, `info`, `debug`, `trace`. An invalid filter falls back to the API default. |
+| `APP_ORIGIN` | Default `http://localhost:3000`. Exact browser origin, no trailing slash. Required on all writes via the `Origin` header. Remote origins require HTTPS and secure cookies. For Vite use `http://localhost:5173`. |
+| `SETUP_SECRET` | Required only to create the first owner; no default. Generate with `openssl rand -hex 32` (32–128 bytes). Empty disables setup. Remove after setup and recreate the app. Registration remains closed once an owner exists. |
+| `RUST_LOG` | Default `bookreplay_api=info`. Application tracing filter, e.g. `warn,bookreplay_api=info,bookreplay_openlibrary=info`; levels include `off`, `error`, `warn`, `info`, `debug`, `trace`. An invalid filter falls back to the API default. Dependency events are suppressed to protect session and request data. |
 
 The production database has no published host port. It is accessible to the application as `postgres:5432` on the Compose network. Use `docker compose exec postgres psql -U bookreplay -d bookreplay` for operator access, or the development override for a local database client.
 
@@ -120,6 +122,8 @@ From the repository root, replace `YOUR_HEX_PASSWORD` with the same password fro
 ```sh
 export DATABASE_URL='postgresql://bookreplay:YOUR_HEX_PASSWORD@127.0.0.1:5432/bookreplay'
 export SESSION_COOKIE_SECURE=false
+export APP_ORIGIN=http://localhost:5173
+export SETUP_SECRET='YOUR_SEPARATE_RANDOM_SETUP_SECRET'
 cargo run --locked
 ```
 

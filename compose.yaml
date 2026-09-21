@@ -10,6 +10,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env; see .env.example}
       OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:-}
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      SETUP_SECRET: ${SETUP_SECRET:-}
       RUST_LOG: ${RUST_LOG:-bookreplay_api=info}
     depends_on:
       postgres:

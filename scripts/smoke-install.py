@@ -24,7 +24,8 @@ def main():
     password = secrets.token_hex(24)
     env = dict(os.environ, BOOKREPLAY_IMAGE=image, POSTGRES_PASSWORD=password,
                DATABASE_URL=f"postgresql://bookreplay:{password}@postgres:5432/bookreplay",
-               SESSION_COOKIE_SECURE="false", OPEN_LIBRARY_CONTACT_EMAIL="",
+               SESSION_COOKIE_SECURE="false", APP_ORIGIN="http://localhost:3000",
+               SETUP_SECRET=password, OPEN_LIBRARY_CONTACT_EMAIL="",
                RUST_LOG="bookreplay_api=info")
     project = f"bookreplay-smoke-{secrets.token_hex(4)}"
     with tempfile.TemporaryDirectory(prefix=project) as directory:
@@ -51,7 +52,7 @@ def main():
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
         def request(path, data=None):
-            headers = {}
+            headers = {"Origin": env["APP_ORIGIN"]}
             if isinstance(data, dict):
                 data = json.dumps(data).encode()
                 headers["Content-Type"] = "application/json"
@@ -78,7 +79,7 @@ def main():
             base = "http://" + compose("port", "bookreplay", "3000", capture=True)
             wait_ready()
             credentials = {"email": "smoke@example.invalid", "password": password}
-            assert request("/api/auth/register", dict(credentials, name="Smoke test"))[0] == 201
+            assert request("/api/auth/register", dict(credentials, name="Smoke test", setup_secret=password))[0] == 201
             assert request("/api/auth/login", credentials)[0] == 204
             count = 1000
             contents = {f"Synthetic highlight {i}." for i in range(count)}

@@ -20,7 +20,7 @@
 			});
 			if (!response.ok) {
 				const result = (await response.json().catch(() => ({}))) as { error?: string };
-				message = result.error ?? 'Sign in failed. Try again.';
+				message = response.status === 429 ? 'Too many attempts. Wait one minute and try again.' : result.error ?? 'Sign in failed. Try again.';
 				return;
 			}
 

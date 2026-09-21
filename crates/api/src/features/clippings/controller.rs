@@ -16,8 +16,8 @@ pub async fn get_all(
 ) -> Result<Json<Vec<EnrichedClipping>>, (StatusCode, Json<ImportResponse>)> {
     info!("fetching all clippings");
     let user_id = authenticated_user_id(auth_session)?;
-    let clippings = model::all(&state.pool, user_id).await.map_err(|error| {
-        error!(error = %error, "failed to fetch clippings from database");
+    let clippings = model::all(&state.pool, user_id).await.map_err(|_error| {
+        error!("failed to fetch clippings from database");
         internal_error("failed to get clippings")
     })?;
     info!(clippings = clippings.len(), "clippings fetched");
@@ -37,8 +37,8 @@ pub async fn import(
     let user_id = authenticated_user_id(auth_session)?;
     let result = model::insert(&state.pool, user_id, &clippings)
         .await
-        .map_err(|error| {
-            error!(parsed, error = %error, "failed to store parsed clippings");
+        .map_err(|_error| {
+            error!(parsed, "failed to store parsed clippings");
             internal_error("clippings import failed")
         })?;
     info!(
@@ -93,8 +93,8 @@ pub async fn update(
     let user_id = authenticated_user_id(auth_session)?;
     let content = model::update_content(&state.pool, user_id, clipping_id, &request.content)
         .await
-        .map_err(|error| {
-            error!(clipping_id, error = %error, "failed to update clipping");
+        .map_err(|_error| {
+            error!(clipping_id, "failed to update clipping");
             internal_error("failed to update highlight")
         })?
         .ok_or_else(|| {

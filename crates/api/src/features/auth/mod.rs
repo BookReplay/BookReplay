@@ -3,7 +3,7 @@ use std::{error::Error, fmt, sync::Arc};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
     Json, Router,
-    extract::{Request, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
     http::{StatusCode, Uri, header::LOCATION},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
@@ -12,7 +12,11 @@ use axum::{
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
+use tokio::sync::Semaphore;
 use tracing::error;
+
+// Held inside blocking work, even if the HTTP request is cancelled.
+static PASSWORD_JOBS: Semaphore = Semaphore::const_new(2);
 
 const OWNER_ID: i16 = 1;
 const INVALID_LOGIN: &str = "invalid email or password";
@@ -24,22 +28,37 @@ pub type AuthSession = axum_login::AuthSession<AuthBackend>;
 pub struct AuthBackend {
     pool: PgPool,
     dummy_hash: Arc<str>,
+    setup_hash: Option<Arc<str>>,
 }
 
 impl AuthBackend {
-    pub async fn new(pool: PgPool) -> Result<Self, AuthError> {
+    pub async fn new(pool: PgPool, setup_secret: Option<String>) -> Result<Self, AuthError> {
         let dummy_hash = hash_password(DUMMY_PASSWORD.to_owned()).await?;
+        let setup_hash = match setup_secret {
+            Some(secret) => Some(hash_password(secret).await?.into()),
+            None => None,
+        };
         Ok(Self {
             pool,
             dummy_hash: dummy_hash.into(),
+            setup_hash,
         })
     }
 }
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, FromRow)]
 pub struct Owner {
     pub(crate) id: i16,
     password_hash: String,
+}
+
+impl fmt::Debug for Owner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Owner")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthUser for Owner {
@@ -96,17 +115,23 @@ impl AuthnBackend for AuthBackend {
 }
 
 #[derive(Debug)]
-pub struct AuthError(String);
+pub enum AuthError {
+    Internal,
+    Busy,
+}
 
 impl AuthError {
-    fn from_display(error: impl fmt::Display) -> Self {
-        Self(error.to_string())
+    fn from_display(_error: impl fmt::Display) -> Self {
+        Self::Internal
     }
 }
 
 impl fmt::Display for AuthError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(match self {
+            Self::Internal => "authentication operation failed",
+            Self::Busy => "password processing busy",
+        })
     }
 }
 
@@ -114,6 +139,8 @@ impl Error for AuthError {}
 
 #[derive(Deserialize)]
 struct RegisterRequest {
+    #[serde(default)]
+    setup_secret: String,
     email: String,
     name: String,
     password: String,
@@ -168,6 +195,8 @@ pub fn router(backend: AuthBackend) -> Router {
         .route("/register", post(register))
         .route("/login", post(login))
         .route("/logout", post(logout))
+        .route("/password", post(change_password))
+        .layer(DefaultBodyLimit::max(4096))
         .with_state(backend)
 }
 
@@ -178,16 +207,21 @@ async fn register(
     let Ok(Json(request)) = payload else {
         return api_error(StatusCode::BAD_REQUEST, "invalid registration request");
     };
+    let Some(setup_hash) = &backend.setup_hash else {
+        return api_error(StatusCode::FORBIDDEN, "owner setup is disabled");
+    };
+    match verify_password(request.setup_secret.clone(), setup_hash.to_string()).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(StatusCode::FORBIDDEN, "invalid setup secret"),
+        Err(error) => return auth_error(error),
+    }
     let registration = match Registration::try_from(request) {
         Ok(registration) => registration,
         Err(message) => return api_error(StatusCode::BAD_REQUEST, message),
     };
     let password_hash = match hash_password(registration.password).await {
         Ok(password_hash) => password_hash,
-        Err(error) => {
-            error!(%error, "failed to hash owner password");
-            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error");
-        }
+        Err(error) => return auth_error(error),
     };
 
     let result =
@@ -210,8 +244,8 @@ async fn register(
         {
             api_error(StatusCode::CONFLICT, "owner is already registered")
         }
-        Err(error) => {
-            error!(%error, "failed to register owner");
+        Err(_error) => {
+            error!("failed to register owner");
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error")
         }
     }
@@ -224,6 +258,9 @@ async fn login(
     let Ok(Json(request)) = payload else {
         return api_error(StatusCode::BAD_REQUEST, "invalid login request");
     };
+    if request.email.len() > 254 || request.password.len() > 128 {
+        return api_error(StatusCode::UNAUTHORIZED, INVALID_LOGIN);
+    }
     let credentials = Credentials {
         email: request.email,
         password: request.password,
@@ -232,15 +269,18 @@ async fn login(
         Ok(Some(owner)) => owner,
         Ok(None) => return api_error(StatusCode::UNAUTHORIZED, INVALID_LOGIN),
         Err(error) => {
-            error!(%error, "owner authentication failed");
+            if matches!(error, axum_login::Error::Backend(AuthError::Busy)) {
+                return auth_error(AuthError::Busy);
+            }
+            error!("owner authentication failed");
             return api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error");
         }
     };
 
     match auth_session.login(&owner).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => {
-            error!(%error, "failed to establish owner session");
+        Err(_error) => {
+            error!("failed to establish owner session");
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error")
         }
     }
@@ -249,8 +289,8 @@ async fn login(
 async fn logout(mut auth_session: AuthSession) -> Response {
     match auth_session.logout().await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => {
-            error!(%error, "failed to invalidate owner session");
+        Err(_error) => {
+            error!("failed to invalidate owner session");
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error")
         }
     }
@@ -276,13 +316,16 @@ pub async fn access_guard(
             .await
         {
             Ok(owner_exists) => owner_exists,
-            Err(error) => {
-                error!(%error, "failed to determine owner registration state");
+            Err(_error) => {
+                error!("failed to determine owner registration state");
                 return api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error");
             }
         }
     };
 
+    if request.uri().path() == "/api/auth/register" && (authenticated || owner_exists) {
+        return api_error(StatusCode::CONFLICT, "owner is already registered");
+    }
     match access_policy(resource, authenticated, owner_exists) {
         Access::Allow => next.run(request).await,
         Access::Register => Redirect::to("/register/").into_response(),
@@ -307,7 +350,9 @@ fn valid_email(email: &str) -> bool {
 }
 
 async fn hash_password(password: String) -> Result<String, AuthError> {
+    let permit = PASSWORD_JOBS.try_acquire().map_err(|_| AuthError::Busy)?;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         Argon2::default()
             .hash_password(password.as_bytes())
             .map(|hash| hash.to_string())
@@ -318,7 +363,9 @@ async fn hash_password(password: String) -> Result<String, AuthError> {
 }
 
 async fn verify_password(password: String, password_hash: String) -> Result<bool, AuthError> {
+    let permit = PASSWORD_JOBS.try_acquire().map_err(|_| AuthError::Busy)?;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let parsed_hash = PasswordHash::new(&password_hash).map_err(AuthError::from_display)?;
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
@@ -330,6 +377,83 @@ async fn verify_password(password: String, password_hash: String) -> Result<bool
 
 fn api_error(status: StatusCode, message: &'static str) -> Response {
     (status, Json(ErrorResponse { error: message })).into_response()
+}
+
+fn auth_error(error: AuthError) -> Response {
+    match error {
+        AuthError::Busy => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "1")],
+            Json(ErrorResponse {
+                error: "password processing busy; try again",
+            }),
+        )
+            .into_response(),
+        AuthError::Internal => api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error"),
+    }
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+async fn change_password(
+    State(backend): State<AuthBackend>,
+    auth_session: AuthSession,
+    payload: Result<Json<ChangePasswordRequest>, JsonRejection>,
+) -> Response {
+    let Some(owner) = auth_session.user else {
+        return api_error(StatusCode::UNAUTHORIZED, "authentication required");
+    };
+    let Ok(Json(request)) = payload else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid password change request");
+    };
+    if request.current_password.len() > 128 || !(12..=128).contains(&request.new_password.len()) {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "password must be between 12 and 128 bytes",
+        );
+    }
+    match verify_password(request.current_password, owner.password_hash.clone()).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(StatusCode::UNAUTHORIZED, "incorrect current password"),
+        Err(error) => return auth_error(error),
+    }
+    let hash = match hash_password(request.new_password).await {
+        Ok(hash) => hash,
+        Err(error) => return auth_error(error),
+    };
+    // Compare the old hash so a racing change cannot undo an operator reset.
+    match sqlx::query("UPDATE owner SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
+        .bind(hash)
+        .bind(owner.id)
+        .bind(owner.password_hash)
+        .execute(&backend.pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() == 1 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => api_error(StatusCode::CONFLICT, "password changed; log in again"),
+        Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error"),
+    }
+}
+
+pub(crate) async fn reset_password(pool: &PgPool, password: String) -> Result<(), Box<dyn Error>> {
+    if !(12..=128).contains(&password.len()) {
+        return Err("password must be between 12 and 128 bytes".into());
+    }
+    let hash = hash_password(password).await?;
+    let result = sqlx::query("UPDATE owner SET password_hash = $1 WHERE id = $2")
+        .bind(hash)
+        .bind(OWNER_ID)
+        .execute(pool)
+        .await
+        .map_err(|_| "could not reset owner password")?;
+    if result.rows_affected() != 1 {
+        return Err("no owner exists; use initial setup".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +502,8 @@ fn access_policy(resource: Resource, authenticated: bool, owner_exists: bool) ->
     if !owner_exists {
         return if resource == Resource::Registration {
             Access::Allow
+        } else if resource == Resource::Api {
+            Access::Unauthorized
         } else {
             Access::Register
         };
@@ -398,6 +524,7 @@ mod tests {
 
     fn register_request(email: &str, name: &str, password: &str) -> RegisterRequest {
         RegisterRequest {
+            setup_secret: String::new(),
             email: email.to_owned(),
             name: name.to_owned(),
             password: password.to_owned(),
@@ -515,6 +642,16 @@ mod tests {
                 .await
                 .expect("wrong-password verification should complete")
         );
+        let permits = PASSWORD_JOBS.try_acquire_many(2).unwrap();
+        assert!(matches!(
+            hash_password("cannot queue".to_owned()).await,
+            Err(AuthError::Busy)
+        ));
+        assert!(matches!(
+            verify_password("cannot queue".to_owned(), second_hash).await,
+            Err(AuthError::Busy)
+        ));
+        drop(permits);
     }
 
     #[test]
@@ -532,7 +669,7 @@ mod tests {
                 Access::Allow,
                 Access::Register,
                 Access::Register,
-                Access::Register
+                Access::Unauthorized
             ]
         );
         assert_eq!(

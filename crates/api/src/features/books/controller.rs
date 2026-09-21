@@ -31,8 +31,8 @@ pub async fn get_all(
         .user
         .map(|user| user.id)
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let books = model::all(&state.pool, user_id).await.map_err(|error| {
-        error!(error = %error, "failed to fetch books from database");
+    let books = model::all(&state.pool, user_id).await.map_err(|_error| {
+        error!("failed to fetch books from database");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     info!(books = books.len(), "books fetched");
@@ -54,8 +54,8 @@ pub async fn search(
         .search(query)
         .await
         .map(Json)
-        .map_err(|error| {
-            error!(error = %error, "Open Library search failed");
+        .map_err(|_error| {
+            error!("Open Library search failed");
             api_error(StatusCode::BAD_GATEWAY, "Open Library search failed")
         })
 }
@@ -76,8 +76,8 @@ pub async fn identify(
         .ok_or_else(|| api_error(StatusCode::UNAUTHORIZED, "authentication required"))?;
     model::identify(&state.pool, user_id, book_id, &candidate)
         .await
-        .map_err(|error| {
-            error!(book_id, error = %error, "failed to identify book");
+        .map_err(|_error| {
+            error!(book_id, "failed to identify book");
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to identify book")
         })?
         .map(Json)

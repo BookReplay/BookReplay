@@ -14,6 +14,7 @@
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
+					setup_secret: data.get('setup_secret'),
 					email: data.get('email'),
 					name: data.get('name'),
 					password: data.get('password')
@@ -21,7 +22,7 @@
 			});
 			const result = (await response.json().catch(() => ({}))) as { error?: string };
 			if (!response.ok) {
-				message = result.error ?? 'Registration failed. Try again.';
+				message = response.status === 429 ? 'Too many attempts. Wait one minute and try again.' : result.error ?? 'Registration failed. Try again.';
 				return;
 			}
 
@@ -48,6 +49,11 @@
 		<p class="m-0 leading-relaxed text-muted">This first account will be the only owner of this BookReplay library.</p>
 
 		<form class="mt-9 grid gap-5" onsubmit={register}>
+			<div>
+				<label class="mb-2 block font-bold" for="setup-secret">Setup secret</label>
+				<p id="setup-help" class="mb-2 text-sm text-muted-light">Enter the secret configured by the server operator.</p>
+				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3" id="setup-secret" name="setup_secret" type="password" autocomplete="off" maxlength="128" aria-describedby="setup-help" required />
+			</div>
 			<div>
 				<label class="mb-2 block font-bold" for="name">Name</label>
 				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="name" name="name" type="text" autocomplete="name" maxlength="100" required />
