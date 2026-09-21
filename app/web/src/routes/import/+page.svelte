@@ -44,7 +44,7 @@
 				: (result.message ?? 'Clippings import failed. Check the file and try again.');
 		} catch {
 			success = false;
-			message = 'Could not reach the clippings API. Check your connection and try again.';
+			message = 'Could not reach BookReplay. Check your connection and try again.';
 		} finally {
 			uploading = false;
 		}

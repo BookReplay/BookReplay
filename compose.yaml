@@ -1,30 +1,26 @@
+name: bookreplay
+
 services:
-  api:
-    build:
-      context: .
-      network: host
+  bookreplay:
+    image: ${BOOKREPLAY_IMAGE:-ghcr.io/loukag/bookreplay:v0.1.0}
+    restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      DATABASE_URL: postgres://bookreplay:bookreplay@postgres:5432/bookreplay
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env; see .env.example}
       OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:-}
-      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+      RUST_LOG: ${RUST_LOG:-bookreplay_api=info}
     depends_on:
       postgres:
         condition: service_healthy
-    develop:
-      watch:
-        - action: rebuild
-          path: .
-          ignore:
-            - My Clippings.txt
-
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: bookreplay
       POSTGRES_USER: bookreplay
-      POSTGRES_PASSWORD: bookreplay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env; see .env.example}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bookreplay -d bookreplay"]
       interval: 5s

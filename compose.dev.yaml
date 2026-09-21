@@ -1,0 +1,26 @@
+# Use with: docker compose -f compose.yaml -f compose.dev.yaml up --build --watch
+services:
+  bookreplay:
+    image: localhost/bookreplay:dev
+    pull_policy: build
+    build:
+      context: .
+      network: host
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+          ignore:
+            - .git/
+            - target/
+            - app/web/node_modules/
+            - app/web/.svelte-kit/
+            - app/web/build/
+            - '**/.env*'
+            - '**/My Clippings*.txt'
+            - backups/
+            - secrets/
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"

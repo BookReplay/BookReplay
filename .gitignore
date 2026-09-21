@@ -1,1 +1,21 @@
-/target
+/target/
+
+# Local credentials and private library data (at any depth).
+.env
+.env.*
+!.env.example
+secrets/
+backups/
+postgres_data/
+pgdata/
+My Clippings*.txt
+*.dump
+*.backup
+*.sql
+*.sql.gz
+*.sql.xz
+*.sql.zst
+*.pem
+*.key
+# Schema migrations are source code, not database backups.
+!/migrations/*.sql

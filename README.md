@@ -1,42 +1,129 @@
 # BookReplay
 
-BookReplay is a self-hosted Kindle highlights app. It imports `My Clippings.txt`, organizes highlights by book, enriches books with Open Library metadata, and lets you review highlights on a spaced schedule.
+BookReplay is a self-hosted Kindle highlights app. Import `My Clippings.txt`, browse highlights by book, match books with Open Library metadata, and review highlights on a spaced schedule. Each instance has one owner account.
 
-## What It Does
+## Installation status
 
-- Import Kindle clippings from `My Clippings.txt`
-- Browse highlights grouped by book
-- Search and match books against Open Library
-- Review highlights with a simple scheduling flow
-- Authenticate with a single owner account
+The first prebuilt release has **not been published yet**. The production configuration targets `ghcr.io/loukag/bookreplay:v0.1.0`; that tag is a planned release, not an available download. Until it is published, use the source-build instructions below. The repository and its packages may require GitHub access; maintainers must make the release package public before advertising anonymous installation.
 
-## Repository Layout
+The initial container target is **Linux x86-64 (`linux/amd64`) only**. ARM64, including Raspberry Pi and native Apple Silicon, is not yet supported or tested. Use one application instance with PostgreSQL 17. Deployment needs Docker Engine and Docker Compose 2.24.4 or newer; running a prebuilt image needs neither Rust nor Node.js.
 
-- `src/main.rs` - Rust entrypoint for the API server
-- `crates/api` - Axum API, auth, books, clippings, and review logic
-- `crates/core` - Shared domain types
-- `crates/kindle` - Kindle clippings parsing
-- `crates/openlibrary` - Open Library search and enrichment
-- `app/web` - SvelteKit frontend
-- `migrations` - Database schema migrations
-- `compose.yaml` - Local Docker setup with Postgres
+## Quick start
 
-## Requirements
+1. Obtain `compose.yaml` and `.env.example` from the same release into a dedicated directory, or clone this repository to build from source. Run all Compose commands from that directory.
+2. Configure the instance:
 
-- Rust 1.88 or newer
-- Node.js 22 or newer
-- PostgreSQL 17
-- `npm` for the web app
+   ```sh
+   cp .env.example .env
+   chmod 600 .env
+   openssl rand -hex 32
+   ```
 
-## Local Development
+   Edit `.env` and paste the generated value into `POSTGRES_PASSWORD`. Leave the `${POSTGRES_PASSWORD}` reference in `DATABASE_URL`; Compose expands it automatically. Set `BOOKREPLAY_IMAGE` to the published version you selected (or an immutable `image@sha256:…` digest). An empty database password or URL makes Compose fail before starting containers. Optionally set `OPEN_LIBRARY_CONTACT_EMAIL` to your contact address.
+3. For a published release:
 
-Start the API from the repository root:
+   ```sh
+   docker compose pull
+   docker compose up -d --wait
+   docker compose logs --tail=50 bookreplay
+   ```
+
+   **Until the first release is published**, build the checked-out source instead:
+
+   ```sh
+   docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
+   docker compose logs --tail=50 bookreplay
+   ```
+
+   Use both `-f` arguments for subsequent commands on a source-built stack. The development override also exposes PostgreSQL on `127.0.0.1:5432`.
+4. Wait for `API is listening` in the application log, then open **http://localhost:3000**. Compose waits for PostgreSQL health, but the application does not yet have a readiness probe. For a remote server, run this on your own computer and use the same browser URL:
+
+   ```sh
+   ssh -N -L 3000:127.0.0.1:3000 user@your-server
+   ```
+
+   The application binds only to the server's loopback interface. Keep setup private: the first visitor creates the owner account. Register with your name, email, and a password of 12–128 bytes, then log in. For access through an HTTPS reverse proxy, set `SESSION_COOKIE_SECURE=true` before exposing the instance; a tested proxy recipe is still tracked in P0 2 of [the checklist](SELF_HOSTING_CHECKLIST.md).
+5. Open **Import**, select your Kindle's `documents/My Clippings.txt`, and import it. Return to the library to verify the highlights. Metadata enrichment happens in the background and needs outbound access to Open Library.
+6. Verify persistence:
+
+   ```sh
+   docker compose restart
+   ```
+
+   After the app is listening again, refresh the library and confirm the highlights remain. For source builds, include both `-f` arguments as above.
+
+## Storage, shutdown, and restart
+
+The named volume **`bookreplay_postgres_data`** stores the owner, password hash, highlights, book metadata, review state, and sessions. Inside PostgreSQL it is mounted at `/var/lib/postgresql/data`. Docker owns the host path; inspect it with `docker volume inspect bookreplay_postgres_data`. The name changes if you override the Compose project name. Keep the project name stable when replacing containers. The application has no persistent filesystem volume; the original Kindle file stays on your own device. Preserve `.env` separately as private configuration.
+
+Wait for active imports and edits to finish before stopping. Graceful application shutdown is still tracked in P1: the test runtime had to kill the application after its 10-second stop timeout, although committed data survived.
 
 ```sh
-cargo run
+docker compose stop       # Stop without removing containers or data.
+docker compose start      # Resume a stopped stack.
+docker compose down       # Remove containers/network; preserve the database volume.
+docker compose up -d      # Recreate containers using the same database volume.
 ```
 
-In a second terminal, run the frontend:
+**`docker compose down -v` deletes the database volume and your library.** Replacing containers or pulling an image does not delete it. Changing `POSTGRES_PASSWORD` in `.env` does not change the password in an already initialized database; change the PostgreSQL role password and URL together. Do not delete the volume to resolve a credential mismatch.
+
+Both services use `restart: unless-stopped`. Enable Docker at boot using your host's service manager. A running stack should return when Docker starts; containers explicitly stopped stay stopped. After installing, reboot the server during a suitable maintenance window, reconnect, run `docker compose ps`, and check your highlights. A real host-reboot test remains a release acceptance step; a container restart alone does not verify it. See [Docker's restart policy documentation](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
+## Environment variables
+
+Compose reads `.env` beside `compose.yaml`. The Rust process does **not** load `.env` by itself.
+
+| Variable | Default / required value |
+| --- | --- |
+| `BOOKREPLAY_IMAGE` | Compose default: `ghcr.io/loukag/bookreplay:v0.1.0` (pending first publication). Select a published version tag or digest; avoid `latest`. The development override always builds `localhost/bookreplay:dev`. |
+| `POSTGRES_PASSWORD` | Required in Compose, no default. Generate a random hex password. Used by PostgreSQL only when initializing an empty volume. |
+| `DATABASE_URL` | Required, no API default. PostgreSQL URI such as `postgresql://bookreplay:PASSWORD@postgres:5432/bookreplay`. The example expands `POSTGRES_PASSWORD`; its database/user must match Compose. For arbitrary passwords, percent-encode reserved URI characters in the URL, while leaving the PostgreSQL password literal. Hex avoids both URI escaping and Compose `$` interpolation issues. |
+| `OPEN_LIBRARY_CONTACT_EMAIL` | Optional; default empty. A contact email included in the Open Library HTTP User-Agent. Empty uses conservative request pacing. |
+| `SESSION_COOKIE_SECURE` | Exactly `true` or `false`; default `false`. Use `false` for localhost or SSH-tunnel HTTP and `true` for HTTPS. A secure cookie cannot authenticate an ordinary HTTP connection. |
+| `RUST_LOG` | Default `bookreplay_api=info`. A Rust tracing filter, e.g. `warn,bookreplay_api=info,bookreplay_openlibrary=info`; levels include `off`, `error`, `warn`, `info`, `debug`, `trace`. An invalid filter falls back to the API default. |
+
+The production database has no published host port. It is accessible to the application as `postgres:5432` on the Compose network. Use `docker compose exec postgres psql -U bookreplay -d bookreplay` for operator access, or the development override for a local database client.
+
+## Resources and installation checks
+
+The repeatable installation check is:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml build
+python3 scripts/smoke-install.py localhost/bookreplay:dev
+```
+
+It starts an isolated project with a random password, an ephemeral localhost port, and a disposable database volume. It verifies the web UI, owner creation/login, 1,000 synthetic highlights, session and highlight persistence after restarting and replacing both containers, and duplicate import. Each service is limited to 0.5 CPU and 256 MiB RAM. It reports import time, sampled memory use, and database size, then removes only its own test volume. It never reads your `.env` or imports personal clippings. Python 3 is needed for this check only.
+
+Measured on 2026-09-21 using Linux amd64, rootless Podman with the Docker-compatible API, and Docker Compose 5.5.1:
+
+| Measurement | Result |
+| --- | --- |
+| Tested service budget | 1 CPU total; 512 MiB RAM total (0.5 CPU / 256 MiB per service, enforced) |
+| Import | 1,000 synthetic highlights in one book, 0.27 seconds |
+| Memory sampled after replacement | Application 22.54 MiB; PostgreSQL 25.89 MiB (not peak usage) |
+| PostgreSQL data directory after the test | 46.43 MiB |
+| Application image, uncompressed | 98.93 MiB |
+
+For an initial small-library deployment, provision at least 1 vCPU, 1 GiB host RAM, and 2 GiB free disk **as an estimate**, plus space for your library and backups. The tested container budget above is not a measured minimum for an entire host; allow additional memory and disk for the operating system, Docker, and image downloads. This one-book fixture does not establish large-library limits. A clean Docker host installation, whole-host minimum resource measurement, and host-reboot validation remain pending in [the checklist](SELF_HOSTING_CHECKLIST.md). Source compilation requires substantially more resources than running a prebuilt image.
+
+## Local development
+
+Install Rust 1.88+, Node.js 22+, npm, and Docker with Compose. Prepare `.env` as above, then start just the database with the development port override:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml up -d --wait postgres
+```
+
+From the repository root, replace `YOUR_HEX_PASSWORD` with the same password from `.env`, using **127.0.0.1** as the database host:
+
+```sh
+export DATABASE_URL='postgresql://bookreplay:YOUR_HEX_PASSWORD@127.0.0.1:5432/bookreplay'
+export SESSION_COOKIE_SECURE=false
+cargo run --locked
+```
+
+In another terminal:
 
 ```sh
 cd app/web
@@ -44,30 +131,25 @@ npm ci
 npm run dev
 ```
 
-The frontend proxies `/api` requests to `http://localhost:3000`.
+Open the URL printed by Vite (normally http://localhost:5173). Vite proxies `/api` to http://localhost:3000. Stop a containerized app before running `cargo run` on the same port. The containerized database persists between development runs.
 
-## Docker
-
-The easiest way to run the full stack locally is:
+For a complete source build with automatic rebuilds instead:
 
 ```sh
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build --watch
 ```
 
-That starts the API and a Postgres database.
+The override preserves host-network builds for development. Production uses only a prebuilt image, without watch settings or a host database port.
 
-## Environment Variables
+## Publishing an image
 
-The Docker setup uses:
+[The release workflow](.github/workflows/release-image.yml) builds `linux/amd64`, runs the installation/persistence check, and only then pushes that same image to `ghcr.io/<owner>/<repository>:<tag>` on `v*` tag pushes. A manual workflow run tests without publishing. Publish a tag matching the application version, e.g. `v0.1.0`, after reviewing the release. GitHub Actions needs package-write permission. Do not move published version tags. For anonymous installation, make the GHCR package public and verify `docker compose pull` with no registry credentials on a clean machine before announcing the release. This workflow follows Docker's [test-before-push approach](https://docs.docker.com/build/ci/github-actions/test-before-push/).
 
-- `DATABASE_URL`
-- `OPEN_LIBRARY_CONTACT_EMAIL`
-- `SESSION_COOKIE_SECURE`
+## Repository layout
 
-The API may also need additional configuration depending on your deployment environment.
-
-## Web App
-
-The frontend has its own README with app-specific details:
-
-- [app/web/README.md](app/web/README.md)
+- `src/main.rs`: Rust entrypoint
+- `crates/api`: Axum API, owner authentication, books, highlights, reviews
+- `crates/core`, `crates/kindle`, `crates/openlibrary`: shared types, parsing, metadata
+- `app/web`: SvelteKit frontend ([frontend README](app/web/README.md))
+- `migrations`: database migrations, applied automatically at application startup
+- `compose.yaml`: production configuration; `compose.dev.yaml`: source build/watch and local database access
