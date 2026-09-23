@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import LogoutButton from '$lib/LogoutButton.svelte';
 
 	type ImportResponse = {
@@ -6,11 +7,18 @@
 		parsed?: number;
 		inserted?: number;
 		duplicates?: number;
+		preview?: string;
 	};
 
 	let message = $state('');
 	let success = $state(false);
 	let uploading = $state(false);
+	let importedCount = $state(0);
+	let preview = $state('');
+	let showingPreview = $state(false);
+	let previewTimer: ReturnType<typeof setTimeout> | undefined;
+
+	onDestroy(() => clearTimeout(previewTimer));
 
 	async function upload(event: SubmitEvent) {
 		event.preventDefault();
@@ -27,6 +35,8 @@
 
 		uploading = true;
 		message = '';
+		showingPreview = false;
+		clearTimeout(previewTimer);
 
 		try {
 			const response = await fetch('/api/clippings/import', {
@@ -39,9 +49,14 @@
 				.catch(() => ({ message: 'Clippings import failed. Check the file and try again.' }))) as ImportResponse;
 
 			success = response.ok;
-			message = response.ok
-				? `Imported ${result.inserted ?? 0} of ${result.parsed ?? 0} clippings (${result.duplicates ?? 0} duplicates).`
-				: (result.message ?? 'Clippings import failed. Check the file and try again.');
+			if (response.ok) {
+				importedCount = result.inserted ?? 0;
+				preview = result.preview ?? 'Your ideas are arriving.';
+				showingPreview = true;
+				previewTimer = setTimeout(() => (showingPreview = false), 900);
+			} else {
+				message = result.message ?? 'Clippings import failed. Check the file and try again.';
+			}
 		} catch {
 			success = false;
 			message = 'Could not reach BookReplay. Check your connection and try again.';
@@ -67,12 +82,25 @@
 		</div>
 	</nav>
 
-	<section class="mx-auto mt-[clamp(4rem,12vw,9rem)] w-full max-w-[38rem] rounded-xl border border-line bg-cream p-[clamp(1.5rem,6vw,3.5rem)] shadow-[0_1.25rem_3rem_rgb(80_65_40/10%)]" aria-labelledby="import-title">
-		<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Add to your library</p>
-		<h1 id="import-title" class="mb-4 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Bring your highlights home</h1>
-		<p class="m-0 text-[1.05rem] leading-relaxed text-muted">Choose the <code class="text-[0.9em]">My Clippings.txt</code> file from your Kindle. Your existing highlights will stay safe; duplicates are skipped.</p>
+	<section class="mx-auto mt-[clamp(4rem,12vw,9rem)] w-full max-w-[38rem] rounded-xl border border-line bg-cream p-[clamp(1.5rem,6vw,3.5rem)] shadow-[0_1.25rem_3rem_rgb(80_65_40/10%)]" aria-live="polite">
+		{#if showingPreview}
+			<div class="import-preview text-center">
+				<p class="mb-5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">A highlight, returning</p>
+				<blockquote class="m-0 font-serif text-[clamp(1.45rem,4vw,2.25rem)] leading-relaxed text-balance">“{preview}”</blockquote>
+			</div>
+		{:else if success}
+			<div class="text-center">
+				<p class="mb-4 text-3xl text-clay" aria-hidden="true">✦</p>
+				<h1 class="mb-3 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Your highlights are imported</h1>
+				<p class="mb-8 text-[1.05rem] leading-relaxed text-muted">{importedCount} highlight{importedCount === 1 ? '' : 's'} imported. Ready to revisit them?</p>
+				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start revision <span aria-hidden="true">→</span></a>
+			</div>
+		{:else}
+			<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Add to your library</p>
+			<h1 id="import-title" class="mb-4 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Bring your highlights home</h1>
+			<p class="m-0 text-[1.05rem] leading-relaxed text-muted">Choose the <code class="text-[0.9em]">My Clippings.txt</code> file from your Kindle. Your existing highlights will stay safe; duplicates are skipped.</p>
 
-		<form class="mt-10" onsubmit={upload} aria-describedby="file-help">
+			<form class="mt-10" onsubmit={upload} aria-describedby="file-help">
 			<label class="mb-2 block font-bold" for="clippings">Clippings file</label>
 			<p id="file-help" class="mb-3 text-sm text-muted-light">A plain-text <code class="text-[0.9em]">.txt</code> export from your Kindle.</p>
 			<input class="w-full rounded-md border border-dashed border-[#9e8e75] bg-[#faf7ef] p-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" id="clippings" name="clippings" type="file" accept=".txt,text/plain" autocomplete="off" required />
@@ -81,6 +109,7 @@
 			{#if message}
 				<p class={`mt-4 leading-relaxed ${success ? 'text-success' : 'text-danger'}`} role={success ? 'status' : 'alert'} aria-live="polite">{message}</p>
 			{/if}
-		</form>
+			</form>
+		{/if}
 	</section>
 </main>

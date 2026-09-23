@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use time::OffsetDateTime;
+use time::{Date, Duration, OffsetDateTime};
 
 use super::scheduler::{ReviewRating, ReviewSchedule};
 
@@ -41,6 +41,29 @@ pub struct ReviewResponse {
     pub next_review_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub archived_at: Option<OffsetDateTime>,
+    pub streak: i32,
+    pub daily_revision_count: i32,
+    pub goal_reached: bool,
+}
+
+#[derive(FromRow)]
+struct StreakState {
+    revision_streak: i32,
+    last_revision_date: Option<Date>,
+    daily_revision_count: i32,
+    daily_revision_date: Option<Date>,
+}
+
+struct DailyProgress {
+    streak: i32,
+    daily_revision_count: i32,
+    goal_reached: bool,
+}
+
+#[derive(FromRow, Serialize)]
+pub struct StreakResponse {
+    pub streak: i32,
+    pub daily_revision_count: i32,
 }
 
 pub async fn session(
@@ -127,6 +150,8 @@ pub async fn save_review(
     .execute(&mut **transaction)
     .await?;
 
+    let progress = record_streak(transaction, user_id, now.date()).await?;
+
     Ok(ReviewResponse {
         highlight_id,
         rating,
@@ -135,7 +160,82 @@ pub async fn save_review(
         last_reviewed_at: now,
         next_review_at: schedule.next_review_at,
         archived_at,
+        streak: progress.streak,
+        daily_revision_count: progress.daily_revision_count,
+        goal_reached: progress.goal_reached,
     })
+}
+
+pub async fn streak(pool: &PgPool, user_id: i16) -> Result<StreakResponse, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT revision_streak AS streak, daily_revision_count FROM owner WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn record_streak(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: i16,
+    today: Date,
+) -> Result<DailyProgress, sqlx::Error> {
+    let state: StreakState = sqlx::query_as(
+        "SELECT revision_streak, last_revision_date, daily_revision_count, daily_revision_date \
+         FROM owner WHERE id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    let progress = next_daily_progress(&state, today);
+    let last_revision_date = if progress.goal_reached {
+        Some(today)
+    } else {
+        state.last_revision_date
+    };
+
+    sqlx::query(
+        "UPDATE owner SET revision_streak = $1, last_revision_date = $2, \
+         daily_revision_count = $3, daily_revision_date = $4 WHERE id = $5",
+    )
+    .bind(progress.streak)
+    .bind(last_revision_date)
+    .bind(progress.daily_revision_count)
+    .bind(today)
+    .bind(user_id)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(progress)
+}
+
+fn next_daily_progress(state: &StreakState, today: Date) -> DailyProgress {
+    const DAILY_GOAL: i32 = 5;
+
+    let daily_revision_count = if state.daily_revision_date == Some(today) {
+        state.daily_revision_count.saturating_add(1)
+    } else {
+        1
+    };
+    let goal_reached = daily_revision_count == DAILY_GOAL;
+
+    DailyProgress {
+        streak: if goal_reached {
+            next_streak(state.revision_streak, state.last_revision_date, today)
+        } else {
+            state.revision_streak
+        },
+        daily_revision_count,
+        goal_reached,
+    }
+}
+
+fn next_streak(streak: i32, last_revision_date: Option<Date>, today: Date) -> i32 {
+    match last_revision_date {
+        Some(date) if date == today => streak,
+        Some(date) if date == today - Duration::days(1) => streak.saturating_add(1),
+        _ => 1,
+    }
 }
 
 fn select_session(
@@ -206,9 +306,65 @@ fn shuffle_key(highlight_id: u64, day: u64) -> u64 {
 mod tests {
     use std::collections::HashSet;
 
-    use time::macros::datetime;
+    use time::macros::{date, datetime};
 
-    use super::{SessionHighlight, select_session};
+    use super::{SessionHighlight, StreakState, next_daily_progress, next_streak, select_session};
+
+    #[test]
+    fn streak_increments_only_after_a_consecutive_day() {
+        assert_eq!(
+            next_streak(4, Some(date!(2026 - 08 - 27)), date!(2026 - 08 - 28)),
+            5
+        );
+    }
+
+    #[test]
+    fn streak_does_not_increment_twice_on_the_same_day() {
+        assert_eq!(
+            next_streak(4, Some(date!(2026 - 08 - 28)), date!(2026 - 08 - 28)),
+            4
+        );
+    }
+
+    #[test]
+    fn streak_restarts_after_a_missed_day() {
+        assert_eq!(
+            next_streak(4, Some(date!(2026 - 08 - 26)), date!(2026 - 08 - 28)),
+            1
+        );
+    }
+
+    #[test]
+    fn fifth_revision_advances_the_streak() {
+        let progress = next_daily_progress(
+            &StreakState {
+                revision_streak: 4,
+                last_revision_date: Some(date!(2026 - 08 - 27)),
+                daily_revision_count: 4,
+                daily_revision_date: Some(date!(2026 - 08 - 28)),
+            },
+            date!(2026 - 08 - 28),
+        );
+
+        assert!(progress.goal_reached);
+        assert_eq!(progress.streak, 5);
+    }
+
+    #[test]
+    fn partial_day_does_not_advance_the_streak() {
+        let progress = next_daily_progress(
+            &StreakState {
+                revision_streak: 4,
+                last_revision_date: Some(date!(2026 - 08 - 27)),
+                daily_revision_count: 3,
+                daily_revision_date: Some(date!(2026 - 08 - 28)),
+            },
+            date!(2026 - 08 - 28),
+        );
+
+        assert!(!progress.goal_reached);
+        assert_eq!(progress.streak, 4);
+    }
 
     fn highlight(
         id: i64,

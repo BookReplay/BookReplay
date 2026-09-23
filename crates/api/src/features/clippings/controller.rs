@@ -32,6 +32,10 @@ pub async fn import(
     info!(content_bytes = content.len(), "clippings import started");
     let clippings = parse_clippings(&content);
     let parsed = clippings.len();
+    let preview = clippings
+        .iter()
+        .find(|clipping| !clipping.content.trim().is_empty())
+        .map(|clipping| clipping.content.clone().into_boxed_str());
     info!(parsed, "clippings file parsed");
 
     let user_id = authenticated_user_id(auth_session)?;
@@ -63,6 +67,7 @@ pub async fn import(
             parsed,
             result.clippings,
             result.books,
+            preview,
         )),
     ))
 }

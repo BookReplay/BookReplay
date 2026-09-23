@@ -11,11 +11,20 @@
 		highlight_text: string;
 	};
 
+	type ReviewResponse = {
+		streak: number;
+		daily_revision_count: number;
+		goal_reached: boolean;
+	};
+
 	let highlights = $state<Highlight[]>([]);
 	let currentIndex = $state(0);
 	let loading = $state(true);
 	let submitting = $state(false);
 	let error = $state('');
+	let streak = $state(0);
+	let dailyRevisionCount = $state(0);
+	let goalReached = $state(false);
 	let totals = $state<Record<Rating, number>>({
 		SOON: 0,
 		LATER: 0,
@@ -27,7 +36,7 @@
 
 	onMount(async () => {
 		try {
-			const response = await fetch('/api/reviews/highlights/session');
+			const response = await fetch('/api/reviews/highlights/session?limit=100');
 			if (!response.ok) throw new Error();
 			highlights = (await response.json()) as Highlight[];
 		} catch {
@@ -49,6 +58,10 @@
 				body: JSON.stringify({ rating })
 			});
 			if (!response.ok) throw new Error();
+			const progress = (await response.json()) as ReviewResponse;
+			streak = progress.streak;
+			dailyRevisionCount = progress.daily_revision_count;
+			goalReached = progress.goal_reached;
 
 			totals = { ...totals, [rating]: totals[rating] + 1 };
 			currentIndex += 1;
@@ -80,11 +93,19 @@
 		<p class="mt-[35vh] text-center text-muted" role="status" aria-live="polite">Preparing your highlights…</p>
 	{:else if error && highlights.length === 0}
 		<p class="mt-[35vh] text-center text-danger" role="alert">{error}</p>
+	{:else if goalReached}
+		<section class="mx-auto mt-[clamp(5rem,15vw,10rem)] max-w-xl text-center" aria-labelledby="goal-title">
+			<p class="streak-burst mb-4 text-5xl text-clay" aria-hidden="true">✦</p>
+			<h1 id="goal-title" class="mb-3 font-serif text-[clamp(2.5rem,8vw,4.5rem)] leading-none tracking-[-0.03em]">Daily goal reached</h1>
+			<p class="mb-8 text-lg text-muted">Five revisions today — your streak is now {streak} day{streak === 1 ? '' : 's'}.</p>
+			<button class="cursor-pointer rounded-full border border-forest bg-forest px-6 py-3.5 font-[inherit] font-bold text-cream shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (goalReached = false)}>Keep revising <span aria-hidden="true">→</span></button>
+		</section>
 	{:else if complete}
 		<section class="mx-auto mt-[clamp(5rem,15vw,10rem)] max-w-xl text-center" aria-labelledby="complete-title">
 			<p class="mb-4 text-3xl text-clay" aria-hidden="true">✦</p>
 			<h1 id="complete-title" class="mb-3 font-serif text-[clamp(2.5rem,8vw,4.5rem)] leading-none tracking-[-0.03em]">Review complete</h1>
 			<p class="mb-8 text-lg text-muted">{highlights.length} highlight{highlights.length === 1 ? '' : 's'} reviewed</p>
+			<p class="mb-8 text-sm font-bold text-forest">✦ {streak}-day revision streak</p>
 			<dl class="mx-auto grid max-w-md grid-cols-2 gap-3 text-left">
 				<div class="rounded-lg border border-line bg-cream p-4"><dt class="text-sm text-muted">Soon</dt><dd class="mt-1 text-2xl font-bold">{totals.SOON}</dd></div>
 				<div class="rounded-lg border border-line bg-cream p-4"><dt class="text-sm text-muted">Later</dt><dd class="mt-1 text-2xl font-bold">{totals.LATER}</dd></div>

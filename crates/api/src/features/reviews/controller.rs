@@ -86,6 +86,17 @@ pub async fn review(
     Ok(Json(response))
 }
 
+pub async fn streak(
+    State(state): State<ReviewsState>,
+    auth_session: AuthSession,
+) -> Result<Json<model::StreakResponse>, ApiError> {
+    let user_id = authenticated_user_id(auth_session)?;
+    let streak = model::streak(&state.pool, user_id)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(streak))
+}
+
 fn internal_error(_error: sqlx::Error) -> ApiError {
     error!("highlight review request failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, "review request failed")

@@ -20,6 +20,15 @@
 		content: string;
 	};
 
+	type ReviewHighlight = {
+		highlight_id: number;
+	};
+
+	type Streak = {
+		streak: number;
+		daily_revision_count: number;
+	};
+
 	type OpenLibraryBook = {
 		open_library_key: string;
 		title: string;
@@ -31,11 +40,16 @@
 	};
 
 	let books = $state<BookSummary[]>([]);
+	let reviewHighlights = $state<ReviewHighlight[]>([]);
+	let streak = $state(0);
+	let dailyRevisionCount = $state(0);
 	let highlights = $state<Clipping[]>([]);
 	let selectedBookId = $state<number | null>(null);
+	let libraryOpen = $state(false);
 	let loading = $state(true);
 	let loadingHighlights = $state(false);
 	let error = $state('');
+	let reviewError = $state('');
 	let highlightsError = $state('');
 	let editingHighlight = $state<Clipping | null>(null);
 	let editedContent = $state('');
@@ -53,15 +67,29 @@
 	let selectedBook = $derived(books.find((book) => book.id === selectedBookId));
 
 	onMount(async () => {
-		try {
-			const response = await fetch('/api/books');
-			if (!response.ok) throw new Error();
-			books = (await response.json()) as BookSummary[];
-		} catch {
-			error = 'Could not load your bookshelf. Try refreshing the page.';
-		} finally {
-			loading = false;
-		}
+		const loadBooks = fetch('/api/books')
+			.then(async (response) => {
+				if (!response.ok) throw new Error();
+				books = (await response.json()) as BookSummary[];
+			})
+			.catch(() => (error = 'Could not load your library. Try refreshing the page.'));
+		const loadReviewQueue = fetch('/api/reviews/highlights/session')
+			.then(async (response) => {
+				if (!response.ok) throw new Error();
+				reviewHighlights = (await response.json()) as ReviewHighlight[];
+			})
+			.catch(() => (reviewError = 'Could not load today’s revision queue.'));
+		const loadStreak = fetch('/api/reviews/streak')
+			.then(async (response) => {
+				if (!response.ok) throw new Error();
+				const progress = (await response.json()) as Streak;
+				streak = progress.streak;
+				dailyRevisionCount = progress.daily_revision_count;
+			})
+			.catch(() => {});
+
+		await Promise.all([loadBooks, loadReviewQueue, loadStreak]);
+		loading = false;
 	});
 
 	async function selectBook(bookId: number) {
@@ -172,8 +200,8 @@
 </script>
 
 <svelte:head>
-	<title>Bookshelf · BookReplay</title>
-	<meta name="description" content="Browse Kindle highlights by book" />
+	<title>Revision · BookReplay</title>
+	<meta name="description" content="Revisit the ideas worth keeping" />
 </svelte:head>
 
 <a class="absolute top-3 left-3 z-10 -translate-y-[200%] rounded-md bg-ink px-3 py-2 text-cream focus-visible:translate-y-0" href="#main-content">Skip to content</a>
@@ -182,7 +210,7 @@
 	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
 		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/" aria-current="page">BookReplay</a>
 		<div class="flex items-center gap-3">
-			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Review highlights</a>
+			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Revise now</a>
 			<a class="rounded-full border border-[#aeb9a6] px-3.5 py-2 text-sm font-bold text-forest no-underline hover:border-forest hover:bg-sage focus-visible:border-forest focus-visible:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/import/">Import clippings <span aria-hidden="true">↗</span></a>
 			<LogoutButton />
 		</div>
@@ -190,8 +218,6 @@
 
 	{#if loading}
 		<p class="mt-[30vh] text-center text-muted" role="status" aria-live="polite">Loading your bookshelf…</p>
-	{:else if error}
-		<p class="mt-[30vh] text-center text-danger" role="alert" aria-live="polite">{error}</p>
 	{:else if selectedBook}
 		<button class="mt-12 mb-6 cursor-pointer border-0 bg-transparent p-0 font-[inherit] font-bold text-forest hover:text-clay focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (selectedBookId = null)}>← All books</button>
 		<header class="flex items-end gap-[clamp(1.25rem,4vw,2.5rem)] border-b border-line pb-10 max-sm:items-start">
@@ -234,14 +260,44 @@
 			</section>
 		{/if}
 	{:else}
-		<header class="mt-[clamp(4rem,11vw,8rem)] mb-12 max-w-2xl">
-			<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Your library</p>
-			<h1 class="mb-3 font-serif text-[clamp(2.5rem,8vw,5.2rem)] leading-[0.98] tracking-[-0.04em] text-balance">Your Bookshelf</h1>
-			<p class="mb-0 text-[1.05rem] text-muted">Choose a book to revisit what stood out.</p>
-		</header>
+		<section class="mx-auto mt-[clamp(4rem,11vw,8rem)] max-w-3xl text-center" aria-labelledby="revision-title">
+			<p class="mb-3 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Your revision practice</p>
+			<h1 id="revision-title" class="mb-4 font-serif text-[clamp(2.75rem,9vw,5.8rem)] leading-[0.94] tracking-[-0.05em] text-balance">Return to what matters.</h1>
+			{#if streak}
+				<p class="mb-4 text-sm font-bold text-forest">✦ {streak}-day revision streak</p>
+			{/if}
+			<p class="mb-4 text-sm text-muted">{dailyRevisionCount} / 5 revisions today</p>
+			{#if reviewError}
+				<p class="text-danger" role="alert">{reviewError}</p>
+			{:else if reviewHighlights.length}
+				<p class="mx-auto mb-7 max-w-xl text-[1.1rem] leading-relaxed text-muted">{reviewHighlights.length} idea{reviewHighlights.length === 1 ? '' : 's'} are ready for a fresh look. A few minutes now keeps the useful parts close.</p>
+				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start today’s revision <span aria-hidden="true">→</span></a>
+			{:else}
+				<p class="mx-auto mb-7 max-w-xl text-[1.1rem] leading-relaxed text-muted">You’re up to date. Your next ideas will return when they’re ready.</p>
+				<a class="inline-block rounded-full border border-[#aeb9a6] px-6 py-3.5 font-bold text-forest no-underline hover:border-forest hover:bg-sage focus-visible:border-forest focus-visible:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/import/">Import more highlights</a>
+			{/if}
+		</section>
 
-		{#if books.length}
-			<section class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,11rem),1fr))] gap-x-[clamp(0.9rem,2.5vw,1.5rem)] gap-y-[clamp(1.25rem,3vw,2rem)]" aria-label="Books with highlights">
+		<section class="mx-auto mt-[clamp(5rem,12vw,9rem)] max-w-4xl border-t border-line pt-7" aria-labelledby="library-title">
+			<div class="flex flex-wrap items-end justify-between gap-4">
+				<div>
+					<p class="mb-1 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Reference</p>
+					<h2 id="library-title" class="font-serif text-3xl tracking-[-0.03em]">Your library</h2>
+					<p class="mt-1 text-muted">Browse or edit highlights when you need them.</p>
+				</div>
+				{#if books.length}
+					<button class="cursor-pointer rounded-full border border-[#aeb9a6] bg-transparent px-4 py-2.5 font-[inherit] font-bold text-forest hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (libraryOpen = !libraryOpen)}>{libraryOpen ? 'Hide books' : `Browse ${books.length} book${books.length === 1 ? '' : 's'}`}</button>
+				{/if}
+			</div>
+			{#if error}
+				<p class="mt-5 text-danger" role="alert">{error}</p>
+			{:else if !books.length}
+				<p class="mt-5 text-muted">Import your Kindle clippings to build your library.</p>
+			{/if}
+		</section>
+
+		{#if libraryOpen && books.length}
+			<section class="mt-8 grid grid-cols-[repeat(auto-fill,minmax(min(100%,10rem),1fr))] gap-x-[clamp(0.9rem,2.5vw,1.5rem)] gap-y-[clamp(1.25rem,3vw,2rem)]" aria-label="Books with highlights">
 				{#each books as book}
 					<article class="relative min-w-0">
 						<button class="group block w-full min-w-0 cursor-pointer border border-transparent bg-transparent p-0 text-left font-[inherit] text-inherit focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => selectBook(book.id)}>
@@ -272,13 +328,6 @@
 						</details>
 					</article>
 				{/each}
-			</section>
-		{:else}
-			<section class="mx-auto mt-32 max-w-lg text-center" aria-label="Empty bookshelf">
-				<p class="mb-4 text-3xl text-clay" aria-hidden="true">✦</p>
-				<h2 class="mb-2 font-serif text-3xl text-balance">Your shelf is waiting</h2>
-				<p class="text-muted">Import your Kindle clippings to make this space your own.</p>
-				<a class="mt-3 inline-block rounded-full border border-[#aeb9a6] px-4 py-3 font-bold text-forest no-underline hover:border-forest hover:bg-sage focus-visible:border-forest focus-visible:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/import/">Import clippings</a>
 			</section>
 		{/if}
 	{/if}

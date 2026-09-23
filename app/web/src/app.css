@@ -43,4 +43,28 @@
 	html {
 		scroll-behavior: auto;
 	}
+
+	.streak-burst,
+	.import-preview {
+		animation: none;
+	}
+}
+
+@keyframes streak-burst {
+	0% { transform: scale(0.5) rotate(-20deg); opacity: 0; }
+	70% { transform: scale(1.2) rotate(8deg); opacity: 1; }
+	100% { transform: scale(1) rotate(0); }
+}
+
+.streak-burst {
+	animation: streak-burst 500ms ease-out both;
+}
+
+@keyframes import-preview {
+	from { opacity: 0; transform: translateY(0.75rem); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+.import-preview {
+	animation: import-preview 300ms ease-out both;
 }
