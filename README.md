@@ -1,6 +1,6 @@
 # BookReplay
 
-BookReplay is a self-hosted Kindle highlights app. Import `My Clippings.txt`, browse highlights by book, match books with Open Library metadata, and review highlights on a spaced schedule. Each instance has one owner account.
+BookReplay is a self-hosted Kindle highlights app. Import `My Clippings.txt`, browse highlights by book, match books with Open Library and optional Google Books metadata, and review highlights on a spaced schedule. Each instance has one owner account.
 
 ## Installation status
 
@@ -36,10 +36,10 @@ The initial container target is **Linux x86-64 (`linux/amd64`) only**. ARM64, in
    ```
 
    Use both `-f` arguments for subsequent commands on a source-built stack. The development override also exposes PostgreSQL on `127.0.0.1:5432`.
-4. Wait for `API is listening` in the application log, then open **http://localhost:3000**. Compose waits for PostgreSQL health, but the application does not yet have a readiness probe. For a remote server, run this on your own computer and use the same browser URL:
+4. Wait for `API is listening` in the application log, then open **http://localhost:2665**. Compose waits for PostgreSQL health, but the application does not yet have a readiness probe. For a remote server, run this on your own computer and use the same browser URL:
 
    ```sh
-   ssh -N -L 3000:127.0.0.1:3000 user@your-server
+   ssh -N -L 2665:127.0.0.1:2665 user@your-server
    ```
 
    Compose publishes the application only on the server's loopback interface. Register with the setup secret, name, email, and a password of 12–128 bytes, then log in. Remove `SETUP_SECRET` from `.env` after registration and recreate the app with `docker compose up -d --force-recreate bookreplay`. For remote access, follow the tested [HTTPS setup and owner recovery guide](deploy/SECURITY.md), setting both `APP_ORIGIN=https://your-domain` and `SESSION_COOKIE_SECURE=true` before exposing the instance.
@@ -80,7 +80,7 @@ Compose reads `.env` beside `compose.yaml`. The Rust process does **not** load `
 | `DATABASE_URL` | Required, no API default. PostgreSQL URI such as `postgresql://bookreplay:PASSWORD@postgres:5432/bookreplay`. The example expands `POSTGRES_PASSWORD`; its database/user must match Compose. For arbitrary passwords, percent-encode reserved URI characters in the URL, while leaving the PostgreSQL password literal. Hex avoids both URI escaping and Compose `$` interpolation issues. |
 | `OPEN_LIBRARY_CONTACT_EMAIL` | Optional; default empty. A contact email included in the Open Library HTTP User-Agent. Empty uses conservative request pacing. |
 | `SESSION_COOKIE_SECURE` | Exactly `true` or `false`; default `false`. Use `false` for localhost or SSH-tunnel HTTP and `true` for HTTPS. A secure cookie cannot authenticate an ordinary HTTP connection. |
-| `APP_ORIGIN` | Default `http://localhost:3000`. Exact browser origin, no trailing slash. Required on all writes via the `Origin` header. Remote origins require HTTPS and secure cookies. For Vite use `http://localhost:5173`. |
+| `APP_ORIGIN` | Default `http://localhost:2665`. Exact browser origin, no trailing slash. Required on all writes via the `Origin` header. Remote origins require HTTPS and secure cookies. For Vite use `http://localhost:5173`. |
 | `SETUP_SECRET` | Required only to create the first owner; no default. Generate with `openssl rand -hex 32` (32–128 bytes). Empty disables setup. Remove after setup and recreate the app. Registration remains closed once an owner exists. |
 | `RUST_LOG` | Default `bookreplay_api=info`. Application tracing filter, e.g. `warn,bookreplay_api=info,bookreplay_openlibrary=info`; levels include `off`, `error`, `warn`, `info`, `debug`, `trace`. An invalid filter falls back to the API default. Dependency events are suppressed to protect session and request data. |
 
@@ -135,7 +135,7 @@ npm ci
 npm run dev
 ```
 
-Open the URL printed by Vite (normally http://localhost:5173). Vite proxies `/api` to http://localhost:3000. Stop a containerized app before running `cargo run` on the same port. The containerized database persists between development runs.
+Open the URL printed by Vite (normally http://localhost:5173). Vite proxies `/api` to http://localhost:2665. Stop a containerized app before running `cargo run` on the same port. The containerized database persists between development runs.
 
 For a complete source build with automatic rebuilds instead:
 
@@ -157,3 +157,31 @@ The override preserves host-network builds for development. Production uses only
 - `app/web`: SvelteKit frontend ([frontend README](app/web/README.md))
 - `migrations`: database migrations, applied automatically at application startup
 - `compose.yaml`: production configuration; `compose.dev.yaml`: source build/watch and local database access
+
+
+### Book metadata sources
+
+New imports automatically search Open Library using title and author, retrying with
+the title alone and without the subtitle when needed. Candidates are ranked by
+title wording, author similarity, and available metadata; Open Library wins ties.
+Titles are searched in their original language. The best available result is
+selected automatically, so use **Identify book** to correct an incorrect match.
+
+Optionally enable Google Books by enabling the Books API in your Google Cloud
+project, creating an API key, and setting `GOOGLE_BOOKS_API_KEY` in `.env`.
+Google [documents API keys for public requests](https://developers.google.com/books/docs/v1/using).
+Compose passes this key only to the server. Recreate the application container
+after changing it (`docker compose up -d --force-recreate bookreplay`).
+Without a key, only Open Library is used. With a key, Google is searched when
+Open Library fails, has an imperfect title match, or lacks a cover or authors.
+Manual identification searches both enabled sources and labels each result.
+
+Existing completed books are not requeued; existing pending imports continue
+processing. Manual identification also uses the upgraded search. Missing fields
+preserve stored values; candidates supplement one another only with a shared ISBN.
+Google edition dates are never stored as first publication years.
+
+To run metadata database checks against a disposable PostgreSQL server, set
+`DATABASE_URL` to a role allowed to create test databases and run
+`cargo test --workspace --locked -- --include-ignored`. Provider tests use local
+mock HTTP responses and need no Google key.

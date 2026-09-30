@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
 };
-use bookreplay_openlibrary::OpenLibraryBook;
+use bookreplay_openlibrary::BookCandidate;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
@@ -42,7 +42,7 @@ pub async fn get_all(
 pub async fn search(
     State(state): State<BooksState>,
     Query(query): Query<SearchQuery>,
-) -> Result<Json<Vec<OpenLibraryBook>>, ApiError> {
+) -> Result<Json<Vec<BookCandidate>>, ApiError> {
     let query = query
         .q
         .as_deref()
@@ -55,8 +55,8 @@ pub async fn search(
         .await
         .map(Json)
         .map_err(|_error| {
-            error!("Open Library search failed");
-            api_error(StatusCode::BAD_GATEWAY, "Open Library search failed")
+            error!("Book metadata search failed");
+            api_error(StatusCode::BAD_GATEWAY, "Book metadata search failed")
         })
 }
 
@@ -64,7 +64,7 @@ pub async fn identify(
     State(state): State<BooksState>,
     auth_session: AuthSession,
     Path(book_id): Path<i64>,
-    candidate: Result<Json<OpenLibraryBook>, JsonRejection>,
+    candidate: Result<Json<BookCandidate>, JsonRejection>,
 ) -> Result<Json<model::BookSummary>, ApiError> {
     let Json(candidate) =
         candidate.map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid book identification"))?;
@@ -84,25 +84,9 @@ pub async fn identify(
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "book not found"))
 }
 
-fn validate_candidate(candidate: &OpenLibraryBook) -> Result<(), ApiError> {
-    let valid_key = candidate
-        .open_library_key
-        .strip_prefix("/works/OL")
-        .and_then(|key| key.strip_suffix('W'))
-        .is_some_and(|digits| {
-            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
-        });
-    if !valid_key {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid Open Library work key",
-        ));
-    }
-    if candidate.title.trim().is_empty() {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "book title must not be empty",
-        ));
+fn validate_candidate(candidate: &BookCandidate) -> Result<(), ApiError> {
+    if !candidate.validate() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid book candidate"));
     }
     Ok(())
 }
@@ -119,16 +103,17 @@ fn api_error(status: StatusCode, message: &str) -> ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use bookreplay_openlibrary::OpenLibraryBook;
+    use bookreplay_openlibrary::BookCandidate;
 
     use super::validate_candidate;
 
-    fn candidate(key: &str, title: &str) -> OpenLibraryBook {
-        OpenLibraryBook {
-            open_library_key: key.into(),
+    fn candidate(key: &str, title: &str) -> BookCandidate {
+        BookCandidate {
+            provider: bookreplay_openlibrary::Provider::OpenLibrary,
+            provider_id: key.into(),
             title: title.into(),
             authors: vec![],
-            cover_id: None,
+            cover_url: None,
             first_publish_year: None,
             edition_count: None,
             isbns: vec![],

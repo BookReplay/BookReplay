@@ -7,7 +7,7 @@ use sqlx::PgPool;
 pub async fn all(pool: &PgPool, user_id: i16) -> Result<Vec<EnrichedClipping>, sqlx::Error> {
     sqlx::query_as(
         "SELECT clippings.id, books.id, books.kindle_title, books.title, books.authors, \
-                books.open_library_key, books.cover_url, books.first_publish_year, \
+                books.open_library_key, books.google_books_volume_id, books.cover_url, books.first_publish_year, \
                 books.edition_count, books.isbns, clippings.metadata, clippings.content \
          FROM clippings JOIN books ON books.id = clippings.book_id \
          WHERE clippings.user_id = $1 ORDER BY clippings.id",

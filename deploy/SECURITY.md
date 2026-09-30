@@ -1,6 +1,6 @@
 # Setup and access security
 
-BookReplay supports one application process and one owner per database. Use local HTTP only on loopback (including an SSH tunnel); use HTTPS for remote browser access. Do not expose port 3000 or PostgreSQL publicly.
+BookReplay supports one application process and one owner per database. Use local HTTP only on loopback (including an SSH tunnel); use HTTPS for remote browser access. Do not expose port 2665 or PostgreSQL publicly.
 
 ## First owner
 
@@ -8,7 +8,7 @@ Generate **separate** random values for `POSTGRES_PASSWORD` and `SETUP_SECRET` w
 
 Start the stack, open the configured browser origin, and enter the setup secret, name, email, and a 12–128-byte password at `/register/`. Then log in at `/login/`. The database enforces a single owner even when registrations race. After setup, registration stays closed regardless of whether the secret is still configured. Remove `SETUP_SECRET` from `.env` and run `docker compose up -d --force-recreate bookreplay` to remove it from the running container. Never put the secret in a URL or share a rendered `docker compose config` containing it.
 
-For local access use `APP_ORIGIN=http://localhost:3000` and `SESSION_COOKIE_SECURE=false`. A remote operator can reach this origin privately with `ssh -N -L 3000:127.0.0.1:3000 user@server`. Other users on the server must be trusted: Docker/database access is operator access.
+For local access use `APP_ORIGIN=http://localhost:2665` and `SESSION_COOKIE_SECURE=false`. A remote operator can reach this origin privately with `ssh -N -L 2665:127.0.0.1:2665 user@server`. Other users on the server must be trusted: Docker/database access is operator access.
 
 ## HTTPS with Caddy on the host
 
@@ -32,7 +32,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy obtains and renews the public certificate and redirects HTTP to HTTPS. Preserve Caddy's certificate storage. Compose publishes the backend on **127.0.0.1:3000 only**, and PostgreSQL has no host port. Keep these defaults; allow only SSH and 80/443 in your host/network firewall. Do not use the development Compose override for a public deployment. Apply the same restrictions to IPv6 if your domain has an IPv6 record. From another machine, verify HTTPS works and direct access to `http://SERVER_IP:3000` and port 5432 fails.
+Caddy obtains and renews the public certificate and redirects HTTP to HTTPS. Preserve Caddy's certificate storage. Compose publishes the backend on **127.0.0.1:2665 only**, and PostgreSQL has no host port. Keep these defaults; allow only SSH and 80/443 in your host/network firewall. Do not use the development Compose override for a public deployment. Apply the same restrictions to IPv6 if your domain has an IPv6 record. From another machine, verify HTTPS works and direct access to `http://SERVER_IP:2665` and port 5432 fails.
 
 The proxy and API cap imports at **2 MiB (2,097,152 bytes)**; authentication JSON is capped at 4 KiB. An oversized import returns HTTP 413. Split larger Kindle exports at complete `==========` entry boundaries. Avoid request-body/header logging at the proxy; the supplied Caddyfile does not enable access logs. See Caddy's [reverse proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) and [request-body limit](https://caddyserver.com/docs/caddyfile/directives/request_body) documentation.
 

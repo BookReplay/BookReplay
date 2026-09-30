@@ -30,5 +30,5 @@ COPY --from=build /app/target/release/bookreplay /usr/local/bin/bookreplay
 COPY --from=web-build /app/build ./app/web/build
 
 USER app
-EXPOSE 3000
+EXPOSE 2665
 CMD ["bookreplay"]

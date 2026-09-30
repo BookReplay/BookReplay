@@ -24,8 +24,8 @@ def main():
     password = secrets.token_hex(24)
     env = dict(os.environ, BOOKREPLAY_IMAGE=image, POSTGRES_PASSWORD=password,
                DATABASE_URL=f"postgresql://bookreplay:{password}@postgres:5432/bookreplay",
-               SESSION_COOKIE_SECURE="false", APP_ORIGIN="http://localhost:3000",
-               SETUP_SECRET=password, OPEN_LIBRARY_CONTACT_EMAIL="",
+               SESSION_COOKIE_SECURE="false", APP_ORIGIN="http://localhost:2665",
+               SETUP_SECRET=password, OPEN_LIBRARY_CONTACT_EMAIL="", GOOGLE_BOOKS_API_KEY="",
                RUST_LOG="bookreplay_api=info")
     project = f"bookreplay-smoke-{secrets.token_hex(4)}"
     with tempfile.TemporaryDirectory(prefix=project) as directory:
@@ -33,7 +33,7 @@ def main():
         override.write_text("""services:
   bookreplay:
     ports: !override
-      - "127.0.0.1::3000"
+      - "127.0.0.1::2665"
     cpus: 0.5
     mem_limit: 256m
   postgres:
@@ -76,7 +76,7 @@ def main():
 
         try:
             compose("up", "-d", "--wait", "--wait-timeout", "90")
-            base = "http://" + compose("port", "bookreplay", "3000", capture=True)
+            base = "http://" + compose("port", "bookreplay", "2665", capture=True)
             wait_ready()
             credentials = {"email": "smoke@example.invalid", "password": password}
             assert request("/api/auth/register", dict(credentials, name="Smoke test", setup_secret=password))[0] == 201
@@ -96,7 +96,7 @@ def main():
 
             for args in [("restart",), ("up", "-d", "--force-recreate", "--wait", "--wait-timeout", "90")]:
                 compose(*args)
-                base = "http://" + compose("port", "bookreplay", "3000", capture=True)
+                base = "http://" + compose("port", "bookreplay", "2665", capture=True)
                 wait_ready()
                 # The existing cookie must still work after both services are replaced.
                 rows = json.loads(request("/api/clippings")[1])

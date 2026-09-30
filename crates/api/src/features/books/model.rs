@@ -1,4 +1,4 @@
-use bookreplay_openlibrary::OpenLibraryBook;
+use bookreplay_openlibrary::BookCandidate;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -28,15 +28,12 @@ pub async fn identify(
     pool: &PgPool,
     user_id: i16,
     book_id: i64,
-    book: &OpenLibraryBook,
+    book: &BookCandidate,
 ) -> Result<Option<BookSummary>, sqlx::Error> {
-    let cover_url = book
-        .cover_id
-        .map(|cover_id| format!("https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"));
     sqlx::query_as(
         "WITH updated AS (\
-             UPDATE books SET open_library_key = $2, title = $3, authors = $4, cover_url = $5, \
-                 first_publish_year = $6, edition_count = $7, isbns = $8, \
+             UPDATE books SET open_library_key = COALESCE($2, open_library_key), title = $3, authors = CASE WHEN cardinality($4::text[]) > 0 THEN $4 ELSE authors END, cover_url = COALESCE($5, cover_url), \
+                 first_publish_year = COALESCE($6, first_publish_year), edition_count = COALESCE($7, edition_count), isbns = CASE WHEN cardinality($8::text[]) > 0 THEN $8 ELSE isbns END, google_books_volume_id = COALESCE($10, google_books_volume_id), \
                  metadata_checked_at = NOW(), retry_count = 0, next_attempt_at = NOW(), \
                  last_error = NULL, updated_at = NOW() \
              WHERE id = $1 RETURNING id, title, authors, cover_url\
@@ -48,14 +45,15 @@ pub async fn identify(
          GROUP BY updated.id, updated.title, updated.authors, updated.cover_url",
     )
     .bind(book_id)
-    .bind(&book.open_library_key)
+    .bind(book.open_library_key())
     .bind(book.title.trim())
     .bind(&book.authors)
-    .bind(cover_url)
+    .bind(&book.cover_url)
     .bind(book.first_publish_year)
     .bind(book.edition_count)
     .bind(&book.isbns)
     .bind(user_id)
+    .bind(book.google_books_volume_id())
     .fetch_optional(pool)
     .await
 }
@@ -85,6 +83,83 @@ mod tests {
                 "cover_url": null,
                 "highlight_count": 3
             })
+        );
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::*;
+    use crate::features::clippings::model::insert;
+    use bookreplay_core::Clipping;
+    use bookreplay_openlibrary::Provider;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn identification_supports_both_sources_and_duplicate_import_keeps_ids(pool: PgPool) {
+        let user_id: i16 = sqlx::query_scalar(
+            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        ).fetch_one(&pool).await.unwrap();
+        let clippings = vec![Clipping {
+            book: "Book (Author)".into(),
+            metadata: "Location 1".into(),
+            content: "Highlight".into(),
+        }];
+        assert_eq!(insert(&pool, user_id, &clippings).await.unwrap().books, 1);
+        let (book_id, clipping_id): (i64, i64) =
+            sqlx::query_as("SELECT book_id, id FROM clippings")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut candidate = BookCandidate {
+            provider: Provider::OpenLibrary,
+            provider_id: "/works/OL1W".into(),
+            title: "Identified".into(),
+            authors: vec!["Author".into()],
+            cover_url: Some("https://covers.openlibrary.org/b/id/1-L.jpg".into()),
+            first_publish_year: Some(1990),
+            edition_count: Some(2),
+            isbns: vec![],
+        };
+        assert_eq!(
+            identify(&pool, user_id, book_id, &candidate)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "Identified"
+        );
+        candidate.provider = Provider::GoogleBooks;
+        candidate.provider_id = "google_1".into();
+        candidate.title = "Google title".into();
+        candidate.authors.clear();
+        candidate.cover_url = None;
+        candidate.first_publish_year = None;
+        let updated = identify(&pool, user_id, book_id, &candidate)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.authors, ["Author"]);
+        assert!(updated.cover_url.is_some());
+        let result = insert(&pool, user_id, &clippings).await.unwrap();
+        assert_eq!((result.books, result.clippings), (0, 0));
+        let ids: (i64, i64) = sqlx::query_as("SELECT book_id, id FROM clippings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ids, (book_id, clipping_id));
+        let row: (String, String, String, bool, i32) = sqlx::query_as(
+            "SELECT title, open_library_key, google_books_volume_id, metadata_checked_at IS NOT NULL, first_publish_year FROM books"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            row,
+            (
+                "Google title".into(),
+                "/works/OL1W".into(),
+                "google_1".into(),
+                true,
+                1990
+            )
         );
     }
 }

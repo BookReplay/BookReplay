@@ -167,12 +167,30 @@ pub async fn save_review(
 }
 
 pub async fn streak(pool: &PgPool, user_id: i16) -> Result<StreakResponse, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT revision_streak AS streak, daily_revision_count FROM owner WHERE id = $1",
+    let state: StreakState = sqlx::query_as(
+        "SELECT revision_streak, last_revision_date, daily_revision_count, daily_revision_date \
+         FROM owner WHERE id = $1",
     )
     .bind(user_id)
     .fetch_one(pool)
-    .await
+    .await?;
+    Ok(current_progress(&state, OffsetDateTime::now_utc().date()))
+}
+
+fn current_progress(state: &StreakState, today: Date) -> StreakResponse {
+    StreakResponse {
+        streak: match state.last_revision_date {
+            Some(date) if date == today || date == today - Duration::days(1) => {
+                state.revision_streak
+            }
+            _ => 0,
+        },
+        daily_revision_count: if state.daily_revision_date == Some(today) {
+            state.daily_revision_count
+        } else {
+            0
+        },
+    }
 }
 
 async fn record_streak(
@@ -223,7 +241,7 @@ fn next_daily_progress(state: &StreakState, today: Date) -> DailyProgress {
         streak: if goal_reached {
             next_streak(state.revision_streak, state.last_revision_date, today)
         } else {
-            state.revision_streak
+            current_progress(state, today).streak
         },
         daily_revision_count,
         goal_reached,
@@ -309,6 +327,24 @@ mod tests {
     use time::macros::{date, datetime};
 
     use super::{SessionHighlight, StreakState, next_daily_progress, next_streak, select_session};
+
+    #[test]
+    fn displayed_progress_resets_at_day_boundaries() {
+        let state = StreakState {
+            revision_streak: 4,
+            last_revision_date: Some(date!(2026 - 08 - 27)),
+            daily_revision_count: 7,
+            daily_revision_date: Some(date!(2026 - 08 - 27)),
+        };
+        for (today, expected) in [
+            (date!(2026 - 08 - 27), (4, 7)),
+            (date!(2026 - 08 - 28), (4, 0)),
+            (date!(2026 - 08 - 29), (0, 0)),
+        ] {
+            let progress = super::current_progress(&state, today);
+            assert_eq!((progress.streak, progress.daily_revision_count), expected);
+        }
+    }
 
     #[test]
     fn streak_increments_only_after_a_consecutive_day() {

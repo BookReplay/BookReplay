@@ -1,5 +1,5 @@
 mod controller;
-mod model;
+pub(super) mod model;
 mod view;
 
 use axum::{

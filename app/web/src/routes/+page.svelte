@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import LogoutButton from '$lib/LogoutButton.svelte';
+	import DailyProgress from '$lib/DailyProgress.svelte';
+	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 
 	type Book = {
 		id: number;
@@ -29,11 +31,12 @@
 		daily_revision_count: number;
 	};
 
-	type OpenLibraryBook = {
-		open_library_key: string;
+	type BookCandidate = {
+		provider: 'open_library' | 'google_books';
+		provider_id: string;
 		title: string;
 		authors: string[];
-		cover_id: number | null;
+		cover_url: string | null;
 		first_publish_year: number | null;
 		edition_count: number | null;
 		isbns: string[];
@@ -41,6 +44,7 @@
 
 	let books = $state<BookSummary[]>([]);
 	let reviewHighlights = $state<ReviewHighlight[]>([]);
+	let progressLoaded = $state(false);
 	let streak = $state(0);
 	let dailyRevisionCount = $state(0);
 	let highlights = $state<Clipping[]>([]);
@@ -59,12 +63,17 @@
 	let searchInput: HTMLInputElement;
 	let identifyingBook = $state<BookSummary | null>(null);
 	let searchQuery = $state('');
-	let searchResults = $state<OpenLibraryBook[]>([]);
+	let searchResults = $state<BookCandidate[]>([]);
 	let searching = $state(false);
 	let saving = $state(false);
 	let identificationError = $state('');
 	let searchRequest = 0;
 	let selectedBook = $derived(books.find((book) => book.id === selectedBookId));
+	let booksView = $derived(browser && page.url.searchParams.get('view') === 'books');
+
+	$effect(() => {
+		if (booksView) selectedBookId = null;
+	});
 
 	onMount(async () => {
 		const loadBooks = fetch('/api/books')
@@ -85,6 +94,7 @@
 				const progress = (await response.json()) as Streak;
 				streak = progress.streak;
 				dailyRevisionCount = progress.daily_revision_count;
+				progressLoaded = true;
 			})
 			.catch(() => {});
 
@@ -166,15 +176,15 @@
 			const response = await fetch(`/api/books/search?q=${encodeURIComponent(query)}`);
 			const body = await response.json();
 			if (!response.ok) throw new Error(body.error);
-			if (request === searchRequest) searchResults = body as OpenLibraryBook[];
+			if (request === searchRequest) searchResults = body as BookCandidate[];
 		} catch {
-			if (request === searchRequest) identificationError = 'Could not search Open Library. Try again.';
+			if (request === searchRequest) identificationError = 'Could not search books. Try again.';
 		} finally {
 			if (request === searchRequest) searching = false;
 		}
 	}
 
-	async function identifyBook(candidate: OpenLibraryBook) {
+	async function identifyBook(candidate: BookCandidate) {
 		if (!identifyingBook) return;
 
 		saving = true;
@@ -200,22 +210,13 @@
 </script>
 
 <svelte:head>
-	<title>Revision · BookReplay</title>
+	<title>{booksView ? 'Books' : 'Revision'} · BookReplay</title>
 	<meta name="description" content="Revisit the ideas worth keeping" />
 </svelte:head>
 
-<a class="absolute top-3 left-3 z-10 -translate-y-[200%] rounded-md bg-ink px-3 py-2 text-cream focus-visible:translate-y-0" href="#main-content">Skip to content</a>
+<a class="absolute top-3 left-3 z-50 -translate-y-[200%] rounded-md bg-ink px-3 py-2 text-cream focus-visible:translate-y-0" href="#main-content">Skip to content</a>
 
 <main id="main-content" aria-busy={loading} class="mx-auto min-h-screen w-[calc(100%-2rem)] max-w-6xl pt-5 pb-20 max-sm:w-[calc(100%-1.5rem)]">
-	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
-		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/" aria-current="page">BookReplay</a>
-		<div class="flex items-center gap-3">
-			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Revise now</a>
-			<a class="rounded-full border border-[#aeb9a6] px-3.5 py-2 text-sm font-bold text-forest no-underline hover:border-forest hover:bg-sage focus-visible:border-forest focus-visible:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/import/">Import clippings <span aria-hidden="true">↗</span></a>
-			<LogoutButton />
-		</div>
-	</nav>
-
 	{#if loading}
 		<p class="mt-[30vh] text-center text-muted" role="status" aria-live="polite">Loading your bookshelf…</p>
 	{:else if selectedBook}
@@ -260,32 +261,41 @@
 			</section>
 		{/if}
 	{:else}
-		<section class="mx-auto mt-[clamp(4rem,11vw,8rem)] max-w-3xl text-center" aria-labelledby="revision-title">
-			<p class="mb-3 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Your revision practice</p>
-			<h1 id="revision-title" class="mb-4 font-serif text-[clamp(2.75rem,9vw,5.8rem)] leading-[0.94] tracking-[-0.05em] text-balance">Return to what matters.</h1>
-			{#if streak}
-				<p class="mb-4 text-sm font-bold text-forest">✦ {streak}-day revision streak</p>
-			{/if}
-			<p class="mb-4 text-sm text-muted">{dailyRevisionCount} / 5 revisions today</p>
-			{#if reviewError}
-				<p class="text-danger" role="alert">{reviewError}</p>
-			{:else if reviewHighlights.length}
-				<p class="mx-auto mb-7 max-w-xl text-[1.1rem] leading-relaxed text-muted">{reviewHighlights.length} idea{reviewHighlights.length === 1 ? '' : 's'} are ready for a fresh look. A few minutes now keeps the useful parts close.</p>
-				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start today’s revision <span aria-hidden="true">→</span></a>
-			{:else}
-				<p class="mx-auto mb-7 max-w-xl text-[1.1rem] leading-relaxed text-muted">You’re up to date. Your next ideas will return when they’re ready.</p>
-				<a class="inline-block rounded-full border border-[#aeb9a6] px-6 py-3.5 font-bold text-forest no-underline hover:border-forest hover:bg-sage focus-visible:border-forest focus-visible:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/import/">Import more highlights</a>
-			{/if}
+		{#if !booksView}
+		<section class="ritual-home page-enter" aria-labelledby="revision-title">
+			<div class="ritual-intro">
+				<p class="eyebrow">Your daily pause</p>
+				<h1 id="revision-title">Good ideas deserve<br /><em>another visit.</em></h1>
+				<p class="intro-copy">Settle in. Revisit a few words you loved, and take something with you into today.</p>
+				{#if reviewError}
+					<p class="text-danger" role="alert">{reviewError}</p>
+				{:else if reviewHighlights.length}
+					<a class="primary-button" href="/review/">{dailyRevisionCount >= 5 ? 'Revisit a few more' : dailyRevisionCount > 0 ? 'Continue your ritual' : 'Begin today’s ritual'} <span aria-hidden="true">→</span></a>
+					<p class="mt-4 text-sm text-muted">{reviewHighlights.length} ideas ready to revisit · At your own pace</p>
+				{:else if books.length}
+					<p class="mb-5 text-muted">You’re all caught up. Your ideas will be here when they’re ready.</p>
+					<a class="secondary-button" href="/?view=books">Spend time with your books <span aria-hidden="true">→</span></a>
+				{:else}
+					<a class="primary-button" href="/import/">Bring in your first highlights <span aria-hidden="true">→</span></a>
+					<p class="mt-4 text-sm text-muted">Start with your Kindle clippings.</p>
+				{/if}
+			</div>
+			<div class="ritual-aside">
+				<div class="reading-mark" aria-hidden="true"><svg viewBox="0 0 180 110" fill="none"><path d="M20 85Q53 69 90 87Q127 69 160 85L153 34Q119 21 90 40Q61 21 27 34Z" fill="#e5eadf" stroke="#4c5f46" stroke-width="2"/><path d="M90 40V87M36 46Q60 40 79 50M35 58Q60 52 79 62M101 50Q123 40 145 46M101 62Q124 52 146 58" stroke="#4c5f46" stroke-width="2" stroke-linecap="round"/><path d="M89 24V12M73 27L68 19M105 27L111 19" stroke="#a3533e" stroke-width="2" stroke-linecap="round"/></svg></div>
+				{#if progressLoaded}<DailyProgress count={dailyRevisionCount} {streak} />{:else}<p class="text-sm text-muted">Your daily progress is unavailable. You can still review.</p>{/if}
+				<p class="mt-4 text-center text-sm italic text-muted">Small moments. Lasting ideas.</p>
+			</div>
 		</section>
+		{/if}
 
-		<section class="mx-auto mt-[clamp(5rem,12vw,9rem)] max-w-4xl border-t border-line pt-7" aria-labelledby="library-title">
+		<section class={booksView ? 'mx-auto mt-9 max-w-4xl' : 'mx-auto mt-12 max-w-5xl border-t border-line pt-7'} aria-labelledby="library-title">
 			<div class="flex flex-wrap items-end justify-between gap-4">
 				<div>
-					<p class="mb-1 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Reference</p>
+					{#if !booksView}<p class="mb-1 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">The words you’ve kept</p>{/if}
 					<h2 id="library-title" class="font-serif text-3xl tracking-[-0.03em]">Your library</h2>
-					<p class="mt-1 text-muted">Browse or edit highlights when you need them.</p>
+					{#if !booksView}<p class="mt-1 text-muted">Browse or edit highlights when you need them.</p>{/if}
 				</div>
-				{#if books.length}
+				{#if books.length && !booksView}
 					<button class="cursor-pointer rounded-full border border-[#aeb9a6] bg-transparent px-4 py-2.5 font-[inherit] font-bold text-forest hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (libraryOpen = !libraryOpen)}>{libraryOpen ? 'Hide books' : `Browse ${books.length} book${books.length === 1 ? '' : 's'}`}</button>
 				{/if}
 			</div>
@@ -296,8 +306,8 @@
 			{/if}
 		</section>
 
-		{#if libraryOpen && books.length}
-			<section class="mt-8 grid grid-cols-[repeat(auto-fill,minmax(min(100%,10rem),1fr))] gap-x-[clamp(0.9rem,2.5vw,1.5rem)] gap-y-[clamp(1.25rem,3vw,2rem)]" aria-label="Books with highlights">
+		{#if (booksView || libraryOpen) && books.length}
+			<section class={`${booksView ? 'mt-4' : 'mt-8'} grid grid-cols-[repeat(auto-fill,minmax(min(100%,10rem),1fr))] gap-x-[clamp(0.9rem,2.5vw,1.5rem)] gap-y-[clamp(1.25rem,3vw,2rem)]`} aria-label="Books with highlights">
 				{#each books as book}
 					<article class="relative min-w-0">
 						<button class="group block w-full min-w-0 cursor-pointer border border-transparent bg-transparent p-0 text-left font-[inherit] text-inherit focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => selectBook(book.id)}>
@@ -359,7 +369,7 @@
 	<div class="p-[clamp(1.25rem,4vw,2rem)]">
 		<div class="mb-5 flex items-start justify-between gap-4">
 			<div>
-				<p class="mb-1 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Open Library</p>
+				<p class="mb-1 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Book metadata</p>
 				<h2 class="font-serif text-3xl leading-tight" id="identification-title">Identify book</h2>
 			</div>
 			<button class="grid h-10 w-10 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-transparent text-xl hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" type="button" aria-label="Close identification dialog" onclick={() => identificationDialog.close()}>×</button>
@@ -376,20 +386,21 @@
 
 		<div class="mt-6" aria-live="polite" aria-busy={searching}>
 			{#if searching}
-				<p class="py-10 text-center text-muted" role="status">Searching Open Library…</p>
+				<p class="py-10 text-center text-muted" role="status">Searching books…</p>
 			{:else if identificationError}
 				<p class="rounded-md bg-[#f9e8e2] p-3 text-danger" role="alert">{identificationError}</p>
 			{:else if searchResults.length}
 				<ul class="grid gap-3">
 					{#each searchResults as candidate}
 						<li class="flex gap-4 rounded-md border border-line p-3 max-sm:gap-3">
-							{#if candidate.cover_id}
-								<img class="h-28 w-[4.7rem] shrink-0 rounded-sm object-cover" src={`https://covers.openlibrary.org/b/id/${candidate.cover_id}-M.jpg`} alt="" width="75" height="112" loading="lazy" />
+							{#if candidate.cover_url}
+								<img class="h-28 w-[4.7rem] shrink-0 rounded-sm object-cover" src={candidate.cover_url} alt="" width="75" height="112" loading="lazy" />
 							{:else}
 								<div class="grid h-28 w-[4.7rem] shrink-0 place-items-center rounded-sm bg-forest font-serif text-2xl text-cream" aria-hidden="true">{candidate.title.slice(0, 1)}</div>
 							{/if}
 							<div class="min-w-0 flex-1">
-								<h3 class="font-serif text-lg leading-tight break-words">{candidate.title}</h3>
+								<p class="mb-1 text-xs text-muted">{candidate.provider === 'open_library' ? 'Open Library' : 'Google Books'}</p>
+                                <h3 class="font-serif text-lg leading-tight break-words">{candidate.title}</h3>
 								{#if candidate.authors.length}<p class="mt-1 text-sm text-muted">{candidate.authors.join(', ')}</p>{/if}
 								<p class="mt-2 text-xs text-muted-light">
 									{candidate.first_publish_year ? `First published ${candidate.first_publish_year}` : 'Publication year unknown'}

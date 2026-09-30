@@ -30,14 +30,14 @@ def main():
     env = dict(os.environ, BOOKREPLAY_IMAGE=sys.argv[1], POSTGRES_PASSWORD=database_password,
                DATABASE_URL=f"postgresql://bookreplay:{database_password}@postgres:5432/bookreplay",
                SETUP_SECRET="", APP_ORIGIN=origin, SESSION_COOKIE_SECURE="true",
-               OPEN_LIBRARY_CONTACT_EMAIL="", RUST_LOG="trace")
+               OPEN_LIBRARY_CONTACT_EMAIL="", GOOGLE_BOOKS_API_KEY="", RUST_LOG="trace")
     with tempfile.TemporaryDirectory(prefix=project) as directory:
         directory = Path(directory)
         override = directory / "compose.yaml"
         override.write_text(f"""services:
   bookreplay:
     ports: !override
-      - "127.0.0.1:{port}:{port}"
+      - "127.0.0.1:{port}:2665"
   caddy:
     image: caddy:2.11.2-alpine
     network_mode: service:bookreplay
@@ -158,7 +158,11 @@ volumes:
             # PostgreSQL rejects NUL text; the error must not echo the submitted highlight.
             failure = expect(500, f"/api/clippings/{clipping_id}", {"content": highlight + "\u0000"}, method="PATCH", cookie=first_cookie)
             assert highlight.encode() not in failure[2]
-            expect(200, f"/api/books/{book_id}/identification", {"open_library_key": "/works/OL1W", "title": "Synthetic", "authors": [], "cover_id": None, "first_publish_year": None, "edition_count": None, "isbns": []}, method="PUT", cookie=first_cookie)
+            expect(200, f"/api/books/{book_id}/identification", {"provider": "open_library", "provider_id": "/works/OL1W", "title": "Synthetic", "authors": [], "cover_url": None, "first_publish_year": None, "edition_count": None, "isbns": []}, method="PUT", cookie=first_cookie)
+            google_candidate = {"provider": "google_books", "provider_id": "synthetic_1", "title": "Synthetic Google", "authors": [], "cover_url": "https://books.google.com/books/content?id=synthetic_1&img=1", "first_publish_year": None, "edition_count": None, "isbns": []}
+            expect(200, f"/api/books/{book_id}/identification", google_candidate, method="PUT", cookie=first_cookie)
+            expect(400, f"/api/books/{book_id}/identification", dict(google_candidate, provider_id="../invalid"), method="PUT", cookie=first_cookie)
+            expect(400, f"/api/books/{book_id}/identification", dict(google_candidate, cover_url="https://attacker.invalid/cover.jpg"), method="PUT", cookie=first_cookie)
             expect(200, f"/api/reviews/highlights/{clipping_id}", {"rating": "LATER"}, cookie=first_cookie)
             expect(413, "/api/clippings/import", "x" * (2 * 1024 * 1024 + 1), cookie=first_cookie)
             def library_snapshot():

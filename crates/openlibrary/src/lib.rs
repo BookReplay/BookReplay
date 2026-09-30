@@ -9,7 +9,7 @@ use reqwest::{
     Client, StatusCode,
     header::{HeaderValue, RETRY_AFTER},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::{Connection, PgConnection};
 use tracing::{debug, error, info, warn};
 
@@ -46,24 +46,27 @@ struct SearchDocument {
     isbn: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpenLibraryBook {
-    pub open_library_key: String,
-    pub title: String,
-    pub authors: Vec<String>,
-    pub cover_id: Option<i64>,
-    pub first_publish_year: Option<i32>,
-    pub edition_count: Option<i32>,
-    pub isbns: Vec<String>,
-}
+mod candidate;
+pub use candidate::{BookCandidate, Provider};
+use candidate::{
+    GoogleResponse, author_name, clean_title, needs_more, normalize, rank, supplement,
+};
 
-impl From<SearchDocument> for OpenLibraryBook {
+impl From<SearchDocument> for BookCandidate {
     fn from(document: SearchDocument) -> Self {
         Self {
-            open_library_key: document.key,
+            provider: Provider::OpenLibrary,
+            provider_id: document.key,
             title: document.title,
-            authors: document.author_name,
-            cover_id: document.cover_i,
+            authors: document
+                .author_name
+                .into_iter()
+                .filter(|s| !s.trim().is_empty())
+                .collect(),
+            cover_url: document
+                .cover_i
+                .filter(|id| *id > 0)
+                .map(|id| format!("https://covers.openlibrary.org/b/id/{id}-L.jpg")),
             first_publish_year: document.first_publish_year,
             edition_count: document.edition_count,
             isbns: document.isbn,
@@ -84,9 +87,11 @@ pub enum SearchError {
 impl fmt::Display for SearchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Request(_) => formatter.write_str("Open Library request failed"),
-            Self::Http { status, .. } => write!(formatter, "Open Library returned HTTP {status}"),
-            Self::Malformed(_) => formatter.write_str("Open Library response was malformed"),
+            Self::Request(_) => formatter.write_str("metadata request failed"),
+            Self::Http { status, .. } => {
+                write!(formatter, "metadata provider returned HTTP {status}")
+            }
+            Self::Malformed(_) => formatter.write_str("metadata response was malformed"),
         }
     }
 }
@@ -98,6 +103,8 @@ pub struct OpenLibrary {
     client: Client,
     search_url: String,
     pacer: Arc<Mutex<RequestPacer>>,
+    google_key: Option<String>,
+    google_url: String,
 }
 
 impl OpenLibrary {
@@ -108,45 +115,130 @@ impl OpenLibrary {
     fn with_search_url(client: Client, search_url: &str) -> Self {
         Self {
             client,
+            google_key: None,
+            google_url: "https://www.googleapis.com/books/v1/volumes".into(),
             search_url: search_url.to_owned(),
             pacer: Arc::new(Mutex::new(RequestPacer::default())),
         }
     }
 
-    pub async fn search(&self, query: &str) -> Result<Vec<OpenLibraryBook>, SearchError> {
-        self.request(query, "q", 10).await
+    pub fn with_google_key(mut self, key: Option<String>) -> Self {
+        self.google_key = key.filter(|key| !key.trim().is_empty());
+        self
     }
 
-    async fn search_by_title(&self, title: &str) -> Result<Vec<OpenLibraryBook>, SearchError> {
-        self.request(title, "title", 1).await
+    pub async fn search(&self, query: &str) -> Result<Vec<BookCandidate>, SearchError> {
+        self.candidates(query, &[], true).await
+    }
+
+    async fn candidates(
+        &self,
+        title: &str,
+        authors: &[&str],
+        manual: bool,
+    ) -> Result<Vec<BookCandidate>, SearchError> {
+        let mut books = Vec::new();
+        let mut failure = None;
+        for provider in [Provider::OpenLibrary, Provider::GoogleBooks] {
+            if provider == Provider::GoogleBooks
+                && (self.google_key.is_none() || (!manual && !needs_more(&books, title)))
+            {
+                continue;
+            }
+            let clean = clean_title(title);
+            let mut queries = vec![(clean, authors)];
+            if !authors.is_empty() {
+                queries.push((clean, &[]));
+            }
+            if let Some(short) = shortened_title(clean) {
+                queries.push((short, &[]));
+            }
+            for (query, query_authors) in queries {
+                match self.request(provider, query, query_authors, manual).await {
+                    Ok(found) => {
+                        for book in found {
+                            if book.validate()
+                                && !books.iter().any(|b: &BookCandidate| {
+                                    b.provider == book.provider && b.provider_id == book.provider_id
+                                })
+                            {
+                                books.push(book);
+                            }
+                        }
+                        rank(&mut books, title, authors);
+                        if !needs_more(&books, title) {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        // Keep transient failures over terminal ones so the queue can retry.
+                        if failure
+                            .as_ref()
+                            .is_none_or(|e: &SearchError| !e.is_transient())
+                        {
+                            failure = Some(error);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if books.is_empty()
+            && let Some(error) = failure
+        {
+            return Err(error);
+        }
+        Ok(books)
     }
 
     async fn request(
         &self,
+        provider: Provider,
         query: &str,
-        query_parameter: &str,
-        limit: usize,
-    ) -> Result<Vec<OpenLibraryBook>, SearchError> {
+        authors: &[&str],
+        manual: bool,
+    ) -> Result<Vec<BookCandidate>, SearchError> {
         self.wait().await;
-        debug!("requesting Open Library metadata");
-        let started_at = Instant::now();
-        let response = self
-            .client
-            .get(&self.search_url)
-            .query(&[
-                (query_parameter, query),
-                ("limit", &limit.to_string()),
-                ("fields", SEARCH_FIELDS),
-            ])
+        let title = normalize(query);
+        let author = authors
+            .iter()
+            .map(|a| author_name(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let request = match provider {
+            Provider::OpenLibrary => {
+                let mut request = self.client.get(&self.search_url).query(&[
+                    (if manual { "q" } else { "title" }, title.as_str()),
+                    ("limit", "10"),
+                    ("fields", SEARCH_FIELDS),
+                ]);
+                if !author.is_empty() {
+                    request = request.query(&[("author", &author)]);
+                }
+                request
+            }
+            Provider::GoogleBooks => {
+                let query = if manual {
+                    title
+                } else {
+                    let mut query = format!("intitle:\"{title}\"");
+                    if !author.is_empty() {
+                        query.push_str(&format!(" inauthor:\"{author}\""));
+                    }
+                    query
+                };
+                self.client.get(&self.google_url).query(&[
+                    ("q", query.as_str()),
+                    ("maxResults", "10"),
+                    ("key", self.google_key.as_deref().unwrap_or_default()),
+                ])
+            }
+        };
+        let response = request
             .send()
             .await
-            .map_err(SearchError::Request)?;
+            .map_err(|error| SearchError::Request(error.without_url()))?;
         let status = response.status();
-        debug!(
-            status = %status,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            "Open Library responded"
-        );
         if !status.is_success() {
             let retry_after = response
                 .headers()
@@ -157,12 +249,21 @@ impl OpenLibrary {
                 retry_after,
             });
         }
-
-        response
-            .json::<SearchResponse>()
-            .await
-            .map(|response| response.docs.into_iter().map(Into::into).collect())
-            .map_err(SearchError::Malformed)
+        match provider {
+            Provider::OpenLibrary => response
+                .json::<SearchResponse>()
+                .await
+                .map(|response| response.docs.into_iter().map(Into::into).collect())
+                .map_err(|error| SearchError::Malformed(error.without_url())),
+            Provider::GoogleBooks => response
+                .json::<GoogleResponse>()
+                .await
+                .map(|response| {
+                    let _ = response.total_items;
+                    response.items.into_iter().map(Into::into).collect()
+                })
+                .map_err(|error| SearchError::Malformed(error.without_url())),
+        }
     }
 
     async fn wait(&self) {
@@ -180,7 +281,7 @@ struct UpstreamFailure {
 }
 
 enum SearchOutcome {
-    Match(SearchDocument),
+    Match(BookCandidate),
     NoMatch,
     Transient(UpstreamFailure),
     Terminal(String),
@@ -306,8 +407,8 @@ async fn process_next_book(
         "processing book enrichment backlog item"
     );
 
-    let (title, _) = from_kindle_title(&book.kindle_title);
-    let outcome = search_with_fallback(open_library, title).await;
+    let (title, authors) = from_kindle_title(&book.kindle_title);
+    let outcome = search_with_fallback(open_library, title, &authors).await;
 
     match outcome {
         SearchOutcome::Match(document) => {
@@ -318,7 +419,7 @@ async fn process_next_book(
             mark_checked(connection, &book, None).await?;
             warn!(
                 book_id = book.id,
-                "book enrichment completed without an Open Library match"
+                "book enrichment completed without a metadata match"
             );
             Ok(WorkerStep::Processed)
         }
@@ -335,47 +436,33 @@ async fn process_next_book(
     }
 }
 
-async fn search_with_fallback(open_library: &OpenLibrary, title: &str) -> SearchOutcome {
-    let mut outcome = search_one(open_library, title).await;
-    if matches!(outcome, SearchOutcome::NoMatch)
-        && let Some(fallback_title) = shortened_title(title)
-    {
-        warn!("Open Library returned no match; trying shortened title");
-        outcome = search_one(open_library, fallback_title).await;
+async fn search_with_fallback(
+    service: &OpenLibrary,
+    title: &str,
+    authors: &[&str],
+) -> SearchOutcome {
+    match service.candidates(title, authors, false).await {
+        Ok(books) => supplement(&books).map_or(SearchOutcome::NoMatch, SearchOutcome::Match),
+        Err(error) if error.is_transient() => {
+            let retry_after = match &error {
+                SearchError::Http { retry_after, .. } => *retry_after,
+                _ => None,
+            };
+            SearchOutcome::Transient(UpstreamFailure {
+                message: error.to_string(),
+                retry_after,
+            })
+        }
+        Err(error) => SearchOutcome::Terminal(error.to_string()),
     }
-    outcome
 }
 
-async fn search_one(open_library: &OpenLibrary, title: &str) -> SearchOutcome {
-    match open_library.search_by_title(title).await {
-        Ok(books) => books
-            .into_iter()
-            .next()
-            .map_or(SearchOutcome::NoMatch, |book| {
-                SearchOutcome::Match(SearchDocument {
-                    key: book.open_library_key,
-                    title: book.title,
-                    author_name: book.authors,
-                    cover_i: book.cover_id,
-                    first_publish_year: book.first_publish_year,
-                    edition_count: book.edition_count,
-                    isbn: book.isbns,
-                })
-            }),
-        Err(SearchError::Http {
-            status,
-            retry_after,
-        }) if is_transient_status(status) => SearchOutcome::Transient(UpstreamFailure {
-            message: format!("Open Library returned HTTP {status}"),
-            retry_after,
-        }),
-        Err(SearchError::Http { status, .. }) => {
-            SearchOutcome::Terminal(format!("Open Library returned HTTP {status}"))
+impl SearchError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Http { status, .. } => is_transient_status(*status),
+            _ => true,
         }
-        Err(error) => SearchOutcome::Transient(UpstreamFailure {
-            message: error.to_string(),
-            retry_after: None,
-        }),
     }
 }
 
@@ -411,25 +498,23 @@ fn retry_delay(retry_count: i32, retry_after: Option<Duration>) -> Duration {
 async fn save_metadata(
     connection: &mut PgConnection,
     book: &PendingBook,
-    document: &SearchDocument,
+    document: &BookCandidate,
 ) -> Result<(), sqlx::Error> {
-    let cover_url = document
-        .cover_i
-        .map(|cover_i| format!("https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"));
     sqlx::query(
-        "UPDATE books SET title = $2, authors = $3, open_library_key = $4, \
-         cover_url = $5, first_publish_year = $6, edition_count = $7, isbns = $8, \
+        "UPDATE books SET title = COALESCE(NULLIF($2, ''), title), authors = CASE WHEN cardinality($3::text[]) > 0 THEN $3 ELSE authors END, open_library_key = COALESCE($4, open_library_key), \
+         cover_url = COALESCE($5, cover_url), first_publish_year = COALESCE($6, first_publish_year), edition_count = COALESCE($7, edition_count), isbns = CASE WHEN cardinality($8::text[]) > 0 THEN $8 ELSE isbns END, google_books_volume_id = COALESCE($9, google_books_volume_id), \
          metadata_checked_at = NOW(), last_error = NULL, updated_at = NOW() \
          WHERE id = $1 AND metadata_checked_at IS NULL",
     )
     .bind(book.id)
     .bind(&document.title)
-    .bind(&document.author_name)
-    .bind(&document.key)
-    .bind(&cover_url)
+    .bind(&document.authors)
+    .bind(document.open_library_key())
+    .bind(&document.cover_url)
     .bind(document.first_publish_year)
     .bind(document.edition_count)
-    .bind(&document.isbn)
+    .bind(&document.isbns)
+    .bind(document.google_books_volume_id())
     .execute(connection)
     .await
     .inspect_err(|_error| {
@@ -439,7 +524,7 @@ async fn save_metadata(
     info!(
         book_id = book.id,
 
-        open_library_key = %document.key,
+        provider_id = %document.provider_id,
         "book enrichment completed"
     );
     Ok(())
@@ -503,7 +588,7 @@ mod tests {
         is_transient_status, parse_retry_after, retry_delay, search_with_fallback, shortened_title,
     };
 
-    async fn mock_open_library(
+    pub(super) async fn mock_open_library(
         bodies: Vec<&'static str>,
     ) -> (String, Arc<Mutex<Vec<Uri>>>, tokio::task::JoinHandle<()>) {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -518,7 +603,7 @@ mod tests {
                 .lock()
                 .expect("response queue lock should not be poisoned")
                 .pop_front()
-                .expect("mock response should be available")
+                .unwrap_or(r#"{"docs":[]}"#)
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -642,7 +727,7 @@ mod tests {
             .lock()
             .expect("request capture lock should not be poisoned");
         let query = requests[0].query().expect("search should have a query");
-        assert!(query.contains("q=A+Book%3A+A+Subtitle"));
+        assert!(query.contains("q=a+book+a+subtitle"));
         assert!(query.contains("limit=10"));
         assert_eq!(
             query.split('&').find(|part| part.starts_with("fields=")),
@@ -729,6 +814,7 @@ mod tests {
         let outcome = search_with_fallback(
             &OpenLibrary::with_search_url(Client::new(), &url),
             "A Book: A Subtitle",
+            &[],
         )
         .await;
         server.abort();
@@ -742,7 +828,7 @@ mod tests {
             requests[1]
                 .query()
                 .expect("fallback should have a query")
-                .contains("title=A+Book")
+                .contains("title=a+book")
         );
     }
 
@@ -754,6 +840,7 @@ mod tests {
         let outcome = search_with_fallback(
             &OpenLibrary::with_search_url(Client::new(), &url),
             "A Book: A Subtitle",
+            &[],
         )
         .await;
         server.abort();
@@ -766,5 +853,311 @@ mod tests {
                 .len(),
             2
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use axum::{Router, http::Uri, response::IntoResponse};
+    use std::collections::VecDeque;
+
+    const OL: &str =
+        r#"{"docs":[{"key":"/works/OL1W","title":"Book","author_name":["Author"],"cover_i":1}]}"#;
+    const GOOGLE: &str = r#"{"totalItems":1,"items":[{"id":"google_1","volumeInfo":{"title":"Book","authors":["Author"],"publishedDate":"2020","imageLinks":{"thumbnail":"http://books.google.com/books/content?id=google_1&img=1"}}}]}"#;
+
+    async fn service(
+        ol: Vec<(u16, &'static str)>,
+        google: Vec<(u16, &'static str)>,
+        delay: Duration,
+    ) -> (
+        OpenLibrary,
+        Arc<Mutex<Vec<Uri>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let ol = Arc::new(Mutex::new(VecDeque::from(ol)));
+        let google = Arc::new(Mutex::new(VecDeque::from(google)));
+        let app = Router::new().fallback(move |uri: Uri| {
+            captured.lock().unwrap().push(uri.clone());
+            let reply = if uri.path() == "/ol" {
+                ol.lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or((200, r#"{"docs":[]}"#))
+            } else {
+                google
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or((200, r#"{"totalItems":0}"#))
+            };
+            async move {
+                if uri.path() == "/ol" {
+                    tokio::time::sleep(delay).await;
+                }
+                (
+                    StatusCode::from_u16(reply.0).unwrap(),
+                    [("retry-after", "45")],
+                    reply.1,
+                )
+                    .into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let mut service = OpenLibrary::with_search_url(client, &format!("http://{address}/ol"))
+            .with_google_key(Some("test-secret".into()));
+        service.google_url = format!("http://{address}/google");
+        (service, requests, server)
+    }
+
+    #[tokio::test]
+    async fn exact_complete_open_library_match_skips_google_but_manual_search_queries_both() {
+        let (service, requests, server) = service(
+            vec![(200, OL), (200, OL)],
+            vec![(200, GOOGLE)],
+            Duration::ZERO,
+        )
+        .await;
+        let automatic = service
+            .candidates("Book", &["Author"], false)
+            .await
+            .unwrap();
+        assert_eq!(automatic[0].provider, Provider::OpenLibrary);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let manual = service.search("Book").await.unwrap();
+        assert_eq!(manual.len(), 2);
+        assert_eq!(manual[1].first_publish_year, None);
+        assert!(
+            manual[1]
+                .cover_url
+                .as_ref()
+                .unwrap()
+                .starts_with("https://")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn google_handles_empty_imperfect_or_incomplete_open_library_results() {
+        for body in [
+            r#"{"docs":[]}"#,
+            r#"{"docs":[{"key":"/works/OL1W","title":"Different","author_name":["Author"],"cover_i":1}]}"#,
+            r#"{"docs":[{"key":"/works/OL1W","title":"Book","author_name":["Author"]}]}"#,
+            r#"{"docs":[{"key":"/works/OL1W","title":"Book","cover_i":1}]}"#,
+        ] {
+            let (service, _, server) =
+                service(vec![(200, body)], vec![(200, GOOGLE)], Duration::ZERO).await;
+            let books = service.candidates("Book", &[], false).await.unwrap();
+            assert_eq!(books[0].provider, Provider::GoogleBooks);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn failures_try_other_source_and_retry_when_no_usable_results() {
+        for (status, body, delay) in [
+            (429, "", Duration::ZERO),
+            (503, "", Duration::ZERO),
+            (200, "malformed", Duration::ZERO),
+            (200, OL, Duration::from_millis(200)),
+        ] {
+            let (service, _, server) = service(
+                vec![(status, body), (status, body)],
+                vec![(200, GOOGLE)],
+                delay,
+            )
+            .await;
+            assert!(matches!(
+                search_with_fallback(&service, "Book", &[]).await,
+                SearchOutcome::Match(_)
+            ));
+            assert!(matches!(
+                search_with_fallback(&service, "Book", &[]).await,
+                SearchOutcome::Transient(_)
+            ));
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn google_failure_keeps_available_open_library_candidate() {
+        let (service, _, server) = service(
+            vec![(200, r#"{"docs":[{"key":"/works/OL1W","title":"Book"}]}"#)],
+            vec![(429, "")],
+            Duration::ZERO,
+        )
+        .await;
+        assert!(matches!(
+            search_with_fallback(&service, "Book", &[]).await,
+            SearchOutcome::Match(_)
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_sources_are_unmatched_and_disabled_google_is_never_called() {
+        let (mut service, requests, server) = service(vec![], vec![], Duration::ZERO).await;
+        assert!(matches!(
+            search_with_fallback(&service, "Book", &[]).await,
+            SearchOutcome::NoMatch
+        ));
+        service.google_key = None;
+        assert!(service.search("Book").await.unwrap().is_empty());
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|uri| uri.path() == "/google")
+                .count(),
+            1
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_queries_normalize_authors_then_remove_subtitle() {
+        let (service, requests, server) = service(vec![], vec![], Duration::ZERO).await;
+        service
+            .candidates(
+                "Réussir: Un guide (French Edition)",
+                &["Tran, Kevin"],
+                false,
+            )
+            .await
+            .unwrap();
+        let queries: Vec<_> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|uri| uri.query().unwrap().to_owned())
+            .collect();
+        assert_eq!(queries.len(), 6);
+        assert!(queries[0].contains("author=kevin+tran"));
+        assert!(!queries[1].contains("author="));
+        assert!(queries[2].contains("title=r%C3%A9ussir&"));
+        assert!(queries.iter().all(|query| !query.contains("french")));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_google_response_is_retryable_and_key_is_redacted() {
+        let (service, _, server) = service(vec![], vec![(200, "{}")], Duration::ZERO).await;
+        let error = service.search("Book").await.unwrap_err();
+        assert!(error.is_transient());
+        assert!(!format!("{error:?}").contains("test-secret"));
+        server.abort();
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn enrichment_preserves_values_and_manual_identification_wins(pool: sqlx::PgPool) {
+        let mut connection = pool.acquire().await.unwrap();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO books (kindle_title, title, authors, cover_url) VALUES ('Original (Author)', 'Original', ARRAY['Author'], 'https://covers.openlibrary.org/b/id/1-L.jpg') RETURNING id"
+        ).fetch_one(&mut *connection).await.unwrap();
+        let book = PendingBook {
+            id,
+            kindle_title: "Original (Author)".into(),
+            retry_count: 0,
+        };
+        let candidate = BookCandidate {
+            provider: Provider::GoogleBooks,
+            provider_id: "volume_1".into(),
+            title: "Enriched".into(),
+            authors: vec![],
+            cover_url: None,
+            first_publish_year: None,
+            edition_count: None,
+            isbns: vec![],
+        };
+        save_metadata(&mut connection, &book, &candidate)
+            .await
+            .unwrap();
+        let row: (String, Vec<String>, Option<String>, Option<String>, Option<i32>) = sqlx::query_as(
+            "SELECT title, authors, cover_url, google_books_volume_id, first_publish_year FROM books WHERE id=$1"
+        ).bind(id).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(
+            row,
+            (
+                "Enriched".into(),
+                vec!["Author".into()],
+                Some("https://covers.openlibrary.org/b/id/1-L.jpg".into()),
+                Some("volume_1".into()),
+                None
+            )
+        );
+
+        // Simulate a worker that already fetched this pending item before a manual save.
+        sqlx::query("UPDATE books SET title='Manual', metadata_checked_at=NOW() WHERE id=$1")
+            .bind(id)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        save_metadata(&mut connection, &book, &candidate)
+            .await
+            .unwrap();
+        mark_checked(&mut connection, &book, Some("late failure"))
+            .await
+            .unwrap();
+        schedule_retry(
+            &mut connection,
+            &book,
+            "late retry",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+        let row: (String, i32, Option<String>) =
+            sqlx::query_as("SELECT title, retry_count, last_error FROM books WHERE id=$1")
+                .bind(id)
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+        assert_eq!(row, ("Manual".into(), 0, None));
+        let service = OpenLibrary::new(Client::new());
+        assert!(matches!(
+            process_next_book(&mut connection, &service).await.unwrap(),
+            WorkerStep::Idle
+        ));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn pending_import_is_processed_with_ranked_metadata(pool: sqlx::PgPool) {
+        let (url, _, server) = super::tests::mock_open_library(vec![
+            r#"{"docs":[{"key":"/works/OL1W","title":"Wrong","author_name":["Author"],"cover_i":1},{"key":"/works/OL2W","title":"Book","author_name":["Author"],"cover_i":2}]}"#,
+        ]).await;
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("INSERT INTO books (kindle_title, title) VALUES ('Book (Author)', 'Book')")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        let service = OpenLibrary::with_search_url(Client::new(), &url);
+        assert!(matches!(
+            process_next_book(&mut connection, &service).await.unwrap(),
+            WorkerStep::Processed
+        ));
+        let row: (String, String, bool) = sqlx::query_as(
+            "SELECT kindle_title, open_library_key, metadata_checked_at IS NOT NULL FROM books",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(row, ("Book (Author)".into(), "/works/OL2W".into(), true));
+        server.abort();
     }
 }

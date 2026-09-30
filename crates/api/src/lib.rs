@@ -3,7 +3,7 @@ mod security;
 
 use std::time::Duration;
 
-use axum::{Router, http::StatusCode, middleware};
+use axum::{Router, http::StatusCode, middleware, routing::get};
 use axum_login::AuthManagerLayerBuilder;
 use features::auth::{AuthBackend, access_guard};
 use features::books::{BooksState, router as books_router};
@@ -22,7 +22,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cookie_secure =
         std::env::var("SESSION_COOKIE_SECURE").map_or(Ok(false), |value| value.parse::<bool>())?;
-    let origin = std::env::var("APP_ORIGIN").unwrap_or_else(|_| "http://localhost:3000".to_owned());
+    let origin = std::env::var("APP_ORIGIN").unwrap_or_else(|_| "http://localhost:2665".to_owned());
     let security = security::Security::new(&origin, cookie_secure)?;
     let setup_secret = std::env::var("SETUP_SECRET")
         .ok()
@@ -104,10 +104,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .user_agent(user_agent)
         .timeout(Duration::from_secs(10))
         .build()?;
-    let open_library = bookreplay_openlibrary::OpenLibrary::new(open_library_client);
+    let open_library = bookreplay_openlibrary::OpenLibrary::new(open_library_client)
+        .with_google_key(std::env::var("GOOGLE_BOOKS_API_KEY").ok());
     bookreplay_openlibrary::spawn_enrichment_worker(database_url, open_library.clone());
 
     let api = Router::new()
+        .route("/version", get(|| async { env!("CARGO_PKG_VERSION") }))
         .nest("/auth", features::auth::router(auth_backend))
         .nest(
             "/books",
@@ -132,7 +134,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .layer(auth_layer)
         .layer(middleware::from_fn_with_state(security, security::guard));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:2665").await?;
 
     info!(address = %listener.local_addr()?, "API is listening");
     axum::serve(listener, app).await?;

@@ -160,18 +160,18 @@ mod tests {
             ("https://u:p@books.example", true),
             ("https://books.example?q=x", true),
             ("http://books.example", false),
-            ("http://localhost:3000", true),
+            ("http://localhost:2665", true),
             ("null", false),
         ] {
             assert!(Security::new(origin, secure).is_err(), "{origin}");
         }
-        assert!(Security::new("http://localhost:3000", false).is_ok());
+        assert!(Security::new("http://localhost:2665", false).is_ok());
         assert!(Security::new("https://books.example", true).is_ok());
     }
 
     #[test]
     fn rate_limit_has_a_bounded_sliding_window() {
-        let security = Security::new("http://localhost:3000", false).unwrap();
+        let security = Security::new("http://localhost:2665", false).unwrap();
         let now = Instant::now();
         for _ in 0..10 {
             assert!(security.allow_attempt(now));

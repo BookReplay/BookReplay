@@ -8,6 +8,11 @@ pub fn from_kindle_title(value: &str) -> (&str, Vec<&str>) {
         return (value, Vec::new());
     };
 
+    let label = authors.trim().to_lowercase();
+    if label.ends_with("edition") || label.ends_with("édition") || label == "kindle" {
+        return (value, Vec::new());
+    }
+
     let authors = authors
         .split(';')
         .map(str::trim)
@@ -64,6 +69,14 @@ mod tests {
                 "L'Art de faire les choses jusqu'au bout (French Edition)",
                 vec!["Tran, Kevin"]
             )
+        );
+    }
+
+    #[test]
+    fn edition_without_author_stays_in_title() {
+        assert_eq!(
+            from_kindle_title("Réussir (French Edition)"),
+            ("Réussir (French Edition)", vec![])
         );
     }
 

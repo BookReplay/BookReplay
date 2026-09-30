@@ -4,14 +4,14 @@ SvelteKit frontend for importing a Kindle `My Clippings.txt` file into the BookR
 
 ## Developing
 
-Start the API on port 3000, then run:
+Start the API on port 2665, then run:
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Vite proxies `/api` requests to `http://localhost:3000`, matching the same-origin URL used in production.
+Vite proxies `/api` requests to `http://localhost:2665`, matching the same-origin URL used in production.
 
 ## Production
 
