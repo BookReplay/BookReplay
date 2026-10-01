@@ -27,16 +27,23 @@ pub async fn import(
     info!(parsed, "clippings file parsed");
 
     let user_id = user_id(auth_session)?;
-    let result = model::insert(&state.pool, user_id, &clippings)
-        .await
-        .map_err(|error| {
-            error!(
-                parsed,
-                cause = database_cause(&error),
-                "failed to store parsed clippings"
-            );
-            ApiError::internal("clippings import failed")
-        })?;
+    let result = model::insert(&state.pool, user_id, &clippings).await;
+    let inserted = result.as_ref().ok().map(|result| result.clippings);
+    // The import itself is what the reader asked for; a lost record of it is not their problem.
+    if let Err(error) = model::record_attempt(&state.pool, user_id, parsed, inserted).await {
+        error!(
+            cause = database_cause(&error),
+            "failed to record the import attempt"
+        );
+    }
+    let result = result.map_err(|error| {
+        error!(
+            parsed,
+            cause = database_cause(&error),
+            "failed to store parsed clippings"
+        );
+        ApiError::internal("clippings import failed")
+    })?;
     info!(
         parsed,
         clippings_inserted = result.clippings,

@@ -94,6 +94,30 @@ pub async fn insert(
     })
 }
 
+/// Notes that an import ran. `inserted` is `None` when storing the highlights failed.
+pub async fn record_attempt(
+    pool: &PgPool,
+    user_id: i64,
+    parsed: usize,
+    inserted: Option<usize>,
+) -> Result<(), sqlx::Error> {
+    let outcome = match inserted {
+        None => "failed",
+        Some(_) if parsed == 0 => "empty",
+        Some(_) => "stored",
+    };
+    sqlx::query(
+        "INSERT INTO import_attempts (user_id, parsed, inserted, outcome) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(parsed as i32)
+    .bind(inserted.unwrap_or(0) as i32)
+    .bind(outcome)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod database_tests {
     use super::*;
@@ -168,5 +192,33 @@ mod database_tests {
             .await
             .unwrap();
         assert_eq!(stored, "Original");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn each_import_attempt_is_recorded_with_its_outcome(pool: PgPool) {
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
+        ).fetch_one(&pool).await.unwrap();
+
+        record_attempt(&pool, user_id, 3, Some(2)).await.unwrap();
+        record_attempt(&pool, user_id, 0, Some(0)).await.unwrap();
+        record_attempt(&pool, user_id, 3, None).await.unwrap();
+
+        let stored: Vec<(i32, i32, String)> = sqlx::query_as(
+            "SELECT parsed, inserted, outcome FROM import_attempts WHERE user_id = $1 ORDER BY id",
+        )
+        .bind(user_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            [
+                (3, 2, "stored".to_string()),
+                (0, 0, "empty".to_string()),
+                (3, 0, "failed".to_string()),
+            ]
+        );
     }
 }
