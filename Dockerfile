@@ -30,5 +30,7 @@ COPY --from=build /app/target/release/bookreplay /usr/local/bin/bookreplay
 COPY --from=web-build /app/build ./app/web/build
 
 USER app
+# Inside the container the published port decides who can connect.
+ENV BIND_ADDR=0.0.0.0:2665
 EXPOSE 2665
 CMD ["bookreplay"]

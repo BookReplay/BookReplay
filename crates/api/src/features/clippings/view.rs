@@ -34,18 +34,6 @@ impl ImportResponse {
             preview,
         }
     }
-
-    pub fn error(message: &'static str) -> Self {
-        Self {
-            message,
-            parsed: None,
-            inserted: None,
-            duplicates: None,
-            books_inserted: None,
-            books_queued: None,
-            preview: None,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -62,6 +62,10 @@ def main():
             with client.open(urllib.request.Request(base + path, data, headers), timeout=20) as response:
                 return response.status, response.read()
 
+        def highlights():
+            book_id = json.loads(request("/api/books")[1])[0]["id"]
+            return json.loads(request(f"/api/books/{book_id}/clippings")[1])
+
         def wait_ready():
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
@@ -78,6 +82,8 @@ def main():
             compose("up", "-d", "--wait", "--wait-timeout", "90")
             base = "http://" + compose("port", "bookreplay", "2665", capture=True)
             wait_ready()
+            # Compose only reports the app healthy once /healthz answers without a session.
+            assert request("/healthz")[0] == 204
             credentials = {"email": "smoke@example.invalid", "password": password}
             assert request("/api/auth/register", dict(credentials, name="Smoke test", setup_secret=password))[0] == 201
             assert request("/api/auth/login", credentials)[0] == 204
@@ -90,7 +96,7 @@ def main():
             status, body = request("/api/clippings/import", clippings)
             assert status == 201 and json.loads(body)["inserted"] == count, body
             print(f"Imported {count} synthetic highlights in {time.monotonic() - start:.2f}s", flush=True)
-            before = json.loads(request("/api/clippings")[1])
+            before = highlights()
             assert len(before) == count and {row["content"] for row in before} == contents
             ids = {row["id"] for row in before}
 
@@ -99,7 +105,7 @@ def main():
                 base = "http://" + compose("port", "bookreplay", "2665", capture=True)
                 wait_ready()
                 # The existing cookie must still work after both services are replaced.
-                rows = json.loads(request("/api/clippings")[1])
+                rows = highlights()
                 assert len(rows) == count and {row["id"] for row in rows} == ids
                 assert {row["content"] for row in rows} == contents
 

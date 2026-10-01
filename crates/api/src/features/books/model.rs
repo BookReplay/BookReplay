@@ -24,6 +24,28 @@ pub async fn all(pool: &PgPool, user_id: i16) -> Result<Vec<BookSummary>, sqlx::
     .await
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BookClipping {
+    pub id: i64,
+    pub metadata: String,
+    pub content: String,
+}
+
+pub async fn clippings(
+    pool: &PgPool,
+    user_id: i16,
+    book_id: i64,
+) -> Result<Vec<BookClipping>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, metadata, content FROM clippings \
+         WHERE user_id = $1 AND book_id = $2 AND btrim(content) <> '' ORDER BY id",
+    )
+    .bind(user_id)
+    .bind(book_id)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn identify(
     pool: &PgPool,
     user_id: i16,
@@ -100,12 +122,17 @@ mod database_tests {
         let user_id: i16 = sqlx::query_scalar(
             "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
         ).fetch_one(&pool).await.unwrap();
-        let clippings = vec![Clipping {
+        // Advance the sequence so the clipping id cannot equal the book id.
+        sqlx::query("SELECT setval('clippings_id_seq', 40)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let imported = vec![Clipping {
             book: "Book (Author)".into(),
             metadata: "Location 1".into(),
             content: "Highlight".into(),
         }];
-        assert_eq!(insert(&pool, user_id, &clippings).await.unwrap().books, 1);
+        assert_eq!(insert(&pool, user_id, &imported).await.unwrap().books, 1);
         let (book_id, clipping_id): (i64, i64) =
             sqlx::query_as("SELECT book_id, id FROM clippings")
                 .fetch_one(&pool)
@@ -141,8 +168,19 @@ mod database_tests {
             .unwrap();
         assert_eq!(updated.authors, ["Author"]);
         assert!(updated.cover_url.is_some());
-        let result = insert(&pool, user_id, &clippings).await.unwrap();
+        let result = insert(&pool, user_id, &imported).await.unwrap();
         assert_eq!((result.books, result.clippings), (0, 0));
+        let listed = clippings(&pool, user_id, book_id).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [clipping_id]
+        );
+        assert!(
+            clippings(&pool, user_id, clipping_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let ids: (i64, i64) = sqlx::query_as("SELECT book_id, id FROM clippings")
             .fetch_one(&pool)
             .await

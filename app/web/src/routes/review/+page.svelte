@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import DailyProgress from '$lib/DailyProgress.svelte';
+	import { loadProgress, progress, recordReview } from '$lib/progress.svelte';
 
 	type Rating = 'SOON' | 'LATER' | 'MUCH_LATER' | 'ARCHIVE';
 
@@ -24,10 +25,8 @@
 	let submitting = $state(false);
 	let error = $state('');
 	let feedback = $state('');
-	let progressLoaded = $state(false);
 	let milestoneTitle = $state<HTMLHeadingElement>();
-	let streak = $state(0);
-	let dailyRevisionCount = $state(0);
+	let session = $state<HTMLElement>();
 	let goalReached = $state(false);
 	let totals = $state<Record<Rating, number>>({
 		SOON: 0,
@@ -39,13 +38,7 @@
 	let complete = $derived(highlights.length > 0 && currentIndex === highlights.length);
 
 	onMount(async () => {
-		const loadProgress = fetch('/api/reviews/streak').then(async (response) => {
-			if (!response.ok) return;
-			const progress = await response.json();
-			streak = progress.streak;
-			dailyRevisionCount = progress.daily_revision_count;
-			progressLoaded = true;
-		}).catch(() => {});
+		const progressRequest = loadProgress();
 		try {
 			const response = await fetch('/api/reviews/highlights/session?limit=100');
 			if (!response.ok) throw new Error();
@@ -53,7 +46,7 @@
 		} catch {
 			error = 'Could not load your review session. Try refreshing the page.';
 		} finally {
-			await loadProgress;
+			await progressRequest;
 			loading = false;
 		}
 	});
@@ -70,13 +63,10 @@
 				body: JSON.stringify({ rating })
 			});
 			if (!response.ok) throw new Error();
-			const progress = (await response.json()) as ReviewResponse;
-			streak = progress.streak;
-			window.dispatchEvent(new CustomEvent('bookreplay:streak', { detail: streak }));
-			dailyRevisionCount = progress.daily_revision_count;
-			goalReached = progress.goal_reached;
-			progressLoaded = true;
-			feedback = rating === 'ARCHIVE' ? 'Archived. Kept in your library.' : `Saved. Returning in ${progress.next_interval_days} days.`;
+			const saved = (await response.json()) as ReviewResponse;
+			recordReview(saved.streak, saved.daily_revision_count);
+			goalReached = saved.goal_reached;
+			feedback = rating === 'ARCHIVE' ? 'Archived. Kept in your library.' : `Saved. Returning in ${saved.next_interval_days} days.`;
 
 			totals = { ...totals, [rating]: totals[rating] + 1 };
 			currentIndex += 1;
@@ -84,8 +74,7 @@
 			if (goalReached || complete) {
 				milestoneTitle?.focus();
 			} else {
-				const card = document.querySelector('.review-session');
-				if (card && card.getBoundingClientRect().top < 90) card.scrollIntoView({ block: 'start' });
+				if (session && session.getBoundingClientRect().top < 90) session.scrollIntoView({ block: 'start' });
 			}
 		} catch {
 			error = 'That choice could not be saved. Try again.';
@@ -114,7 +103,7 @@
 			<p class="eyebrow">{goalReached ? 'Five little moments, well spent' : 'A little wiser than before'}</p>
 			<h1 id="complete-title" bind:this={milestoneTitle} tabindex="-1">{goalReached ? 'You showed up for yourself.' : 'Let those ideas settle.'}</h1>
 			<p class="intro-copy">{goalReached ? 'Your daily ritual is complete. Take a thought you love into the rest of your day.' : `You revisited ${currentIndex} highlight${currentIndex === 1 ? '' : 's'} this session. Each visit helps the good ideas stay.`}</p>
-			{#if progressLoaded}<DailyProgress count={dailyRevisionCount} {streak} />{/if}
+			{#if progress.loaded}<DailyProgress count={progress.dailyRevisionCount} streak={progress.streak} />{/if}
 			<div class="mt-8 flex flex-wrap justify-center gap-3">
 				<a class="primary-button" href="/">Done for now <span aria-hidden="true">✓</span></a>
 				{#if current}<button class="secondary-button" type="button" onclick={() => (goalReached = false)}>Revisit a few more →</button>{/if}
@@ -130,8 +119,8 @@
 			<a class="primary-button" href="/?view=books">Visit your bookshelf →</a>
 		</section>
 	{:else}
-		{#if progressLoaded}<DailyProgress count={dailyRevisionCount} {streak} />{/if}
-		<section class="review-session" aria-labelledby="review-title">
+		{#if progress.loaded}<DailyProgress count={progress.dailyRevisionCount} streak={progress.streak} />{/if}
+		<section bind:this={session} class="review-session" aria-labelledby="review-title">
 			<div class="flex items-center justify-between gap-4 mb-4">
 				<p class="eyebrow">One idea at a time</p>
 				<p class="text-xs text-muted">{currentIndex + 1} of {highlights.length} in this visit</p>

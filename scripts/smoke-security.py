@@ -37,7 +37,7 @@ def main():
         override.write_text(f"""services:
   bookreplay:
     ports: !override
-      - "127.0.0.1:{port}:2665"
+      - "127.0.0.1:{port}:{port}"
   caddy:
     image: caddy:2.11.2-alpine
     network_mode: service:bookreplay
@@ -124,7 +124,8 @@ volumes:
             compose("up", "-d", "--force-recreate", "bookreplay")
             compose("up", "-d", "caddy")
             ready()
-            expect(401, "/api/clippings")
+            expect(401, "/api/books")
+            expect(204, "/healthz", request_origin=None)
             expect(403, "/api/auth/register", registration)
             expect(403, "/api/auth/register", dict(registration, setup_secret="wrong"))
             registration["setup_secret"] = secret
@@ -145,12 +146,12 @@ volumes:
             highlight = "PRIVATE-HIGHLIGHT-" + secrets.token_hex(12)
             clipping = f"Synthetic security test (Example Author)\n- Highlight at location 1\n\n{highlight}\n==========\n"
             expect(201, "/api/clippings/import", clipping, cookie=first_cookie)
-            rows = json.loads(expect(200, "/api/clippings", cookie=first_cookie)[2])
-            clipping_id = rows[0]["id"]
             book_id = json.loads(expect(200, "/api/books", cookie=first_cookie)[2])[0]["id"]
+            rows = json.loads(expect(200, f"/api/books/{book_id}/clippings", cookie=first_cookie)[2])
+            clipping_id = rows[0]["id"]
             for method, path in mutations:
                 expect(403, path, {}, method=method, cookie=first_cookie, request_origin="https://attacker.invalid")
-            for path in ("/api/clippings", "/api/books", "/api/books/search?q=private", "/api/reviews/highlights/session"):
+            for path in (f"/api/books/{book_id}/clippings", "/api/books", "/api/books/search?q=private", "/api/reviews/highlights/session"):
                 expect(401, path)
             for method, path in mutations[2:]:
                 expect(401, path, {}, method=method)
@@ -164,13 +165,17 @@ volumes:
             expect(400, f"/api/books/{book_id}/identification", dict(google_candidate, provider_id="../invalid"), method="PUT", cookie=first_cookie)
             expect(400, f"/api/books/{book_id}/identification", dict(google_candidate, cover_url="https://attacker.invalid/cover.jpg"), method="PUT", cookie=first_cookie)
             expect(200, f"/api/reviews/highlights/{clipping_id}", {"rating": "LATER"}, cookie=first_cookie)
-            expect(413, "/api/clippings/import", "x" * (2 * 1024 * 1024 + 1), cookie=first_cookie)
+            # A repeated submission must not be recorded twice.
+            expect(409, f"/api/reviews/highlights/{clipping_id}", {"rating": "LATER"}, cookie=first_cookie)
+            # Importing the same file after an edit must not bring the original text back.
+            assert json.loads(expect(201, "/api/clippings/import", clipping, cookie=first_cookie)[2])["inserted"] == 0
+            expect(413, "/api/clippings/import", "x" * (16 * 1024 * 1024 + 1), cookie=first_cookie)
             def library_snapshot():
                 return compose("exec", "-T", "postgres", "psql", "-U", "bookreplay", "-d", "bookreplay", "-Atc",
                                "SELECT row_to_json(c) FROM clippings c ORDER BY id; SELECT row_to_json(r) FROM highlight_reviews r ORDER BY id; SELECT open_library_key, title FROM books ORDER BY id;").stdout
             before_recovery = library_snapshot()
             print("PASS: HTTPS setup, registration race, access and CSRF checks, import/edit/review, upload bound.", flush=True)
-            # The global limiter includes malformed/unauthenticated password-change attempts above.
+            # The limiter counts malformed/unauthenticated password-change attempts above.
             compose("stop", "caddy")
             compose("restart", "bookreplay")
             compose("start", "caddy")
@@ -178,25 +183,25 @@ volumes:
             expect(401, "/api/auth/password", {"current_password": "wrong", "new_password": "replacement-password"}, cookie=first_cookie)
             expect(204, "/api/auth/password", {"current_password": password, "new_password": "replacement-password"}, cookie=first_cookie)
             for cookie in (first_cookie, second_cookie):
-                expect(401, "/api/clippings", cookie=cookie)
+                expect(401, "/api/books", cookie=cookie)
             expect(401, "/api/auth/login", {"email": registration["email"], "password": password})
             third_cookie = login("replacement-password")
             expect(204, "/api/auth/logout", {}, cookie=third_cookie)
-            expect(401, "/api/clippings", cookie=third_cookie)
+            expect(401, "/api/books", cookie=third_cookie)
             third_cookie, fourth_cookie = login("replacement-password"), login("replacement-password")
             # Operator command reads stdin and changes only the existing owner's password.
             compose("exec", "-T", "bookreplay", "bookreplay", "reset-owner-password", input="recovered-password\n")
             for cookie in (third_cookie, fourth_cookie):
-                expect(401, "/api/clippings", cookie=cookie)
+                expect(401, "/api/books", cookie=cookie)
             expect(401, "/api/auth/login", {"email": registration["email"], "password": "replacement-password"})
             recovered_cookie = login("recovered-password")
-            assert json.loads(expect(200, "/api/clippings", cookie=recovered_cookie)[2])[0]["content"] == highlight + " edited"
+            assert json.loads(expect(200, f"/api/books/{book_id}/clippings", cookie=recovered_cookie)[2])[0]["content"] == highlight + " edited"
             assert library_snapshot() == before_recovery, "password recovery changed library data"
             compose("exec", "-T", "bookreplay", "bookreplay", "reset-owner-password", input="recovered-password\n")
-            expect(401, "/api/clippings", cookie=recovered_cookie)
+            expect(401, "/api/books", cookie=recovered_cookie)
             login("recovered-password")
             expect(409, "/api/auth/register", registration)
-            # Fill the shared ten-attempt window; forwarded IP changes cannot evade it.
+            # Fill this client's ten-attempt window; a forwarded header is ignored unless CLIENT_IP_HEADER is set.
             statuses = [request("/api/auth/login", {"email": registration["email"], "password": "wrong"}, headers={"X-Forwarded-For": f"192.0.2.{i}"})[0] for i in range(11)]
             assert 429 in statuses and statuses[-1] == 429, statuses
             expect(429, "/api/auth/register", registration)

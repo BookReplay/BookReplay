@@ -18,5 +18,5 @@ Vite proxies `/api` requests to `http://localhost:2665`, matching the same-origi
 The Docker build prerenders this app into `build/`. The BookReplay Axum server serves those files and the `/api` routes from the same origin:
 
 ```sh
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```

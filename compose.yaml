@@ -4,16 +4,30 @@ services:
   bookreplay:
     image: ${BOOKREPLAY_IMAGE:-ghcr.io/loukag/bookreplay:v0.1.0}
     restart: unless-stopped
+    # The app writes nothing to its own filesystem; all state is in PostgreSQL.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "127.0.0.1:2665:2665"
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env; see .env.example}
       GOOGLE_BOOKS_API_KEY: ${GOOGLE_BOOKS_API_KEY:-}
       OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:-}
+      METADATA_ENRICHMENT: "${METADATA_ENRICHMENT:-true}"
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-}
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:2665}
       SETUP_SECRET: ${SETUP_SECRET:-}
       RUST_LOG: ${RUST_LOG:-bookreplay_api=info}
+    healthcheck:
+      test: ["CMD", "bookreplay", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

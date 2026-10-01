@@ -2,8 +2,12 @@
 	import { onDestroy } from 'svelte';
 	import LogoutButton from '$lib/LogoutButton.svelte';
 
+	// Matches the server's import limit (MAX_IMPORT_BYTES).
+	const MAX_FILE_BYTES = 16 * 1024 * 1024;
+	const TOO_LARGE = 'That file is larger than 16 MB, the most BookReplay accepts in one import.';
+
 	type ImportResponse = {
-		message?: string;
+		error?: string;
 		parsed?: number;
 		inserted?: number;
 		duplicates?: number;
@@ -14,6 +18,7 @@
 	let success = $state(false);
 	let uploading = $state(false);
 	let importedCount = $state(0);
+	let skippedCount = $state(0);
 	let preview = $state('');
 	let showingPreview = $state(false);
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -32,6 +37,11 @@
 			message = 'Choose a non-empty .txt file, then try again.';
 			return;
 		}
+		if (file.size > MAX_FILE_BYTES) {
+			success = false;
+			message = TOO_LARGE;
+			return;
+		}
 
 		uploading = true;
 		message = '';
@@ -44,18 +54,20 @@
 				headers: { 'content-type': 'text/plain; charset=utf-8' },
 				body: await file.text()
 			});
-			const result = (await response
-				.json()
-				.catch(() => ({ message: 'Clippings import failed. Check the file and try again.' }))) as ImportResponse;
+			const result = (await response.json().catch(() => ({}))) as ImportResponse;
 
 			success = response.ok;
 			if (response.ok) {
 				importedCount = result.inserted ?? 0;
+				skippedCount = result.duplicates ?? 0;
 				preview = result.preview ?? 'Your ideas are arriving.';
 				showingPreview = true;
 				previewTimer = setTimeout(() => (showingPreview = false), 900);
 			} else {
-				message = result.message ?? 'Clippings import failed. Check the file and try again.';
+				message =
+					response.status === 413
+						? TOO_LARGE
+						: 'Clippings import failed. Check the file and try again.';
 			}
 		} catch {
 			success = false;
@@ -92,7 +104,7 @@
 			<div class="text-center">
 				<p class="mb-4 text-3xl text-clay" aria-hidden="true">✦</p>
 				<h1 class="mb-3 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Your highlights are imported</h1>
-				<p class="mb-8 text-[1.05rem] leading-relaxed text-muted">{importedCount} highlight{importedCount === 1 ? '' : 's'} imported. Ready to revisit them?</p>
+				<p class="mb-8 text-[1.05rem] leading-relaxed text-muted">{importedCount} highlight{importedCount === 1 ? '' : 's'} imported{skippedCount ? `; ${skippedCount} already in your library` : ''}. Ready to revisit them?</p>
 				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start revision <span aria-hidden="true">→</span></a>
 			</div>
 		{:else}
@@ -107,7 +119,7 @@
 			<button class="mt-4 w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-cream hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={uploading}>{uploading ? 'Importing…' : 'Import clippings'}</button>
 
 			{#if message}
-				<p class={`mt-4 leading-relaxed ${success ? 'text-success' : 'text-danger'}`} role={success ? 'status' : 'alert'} aria-live="polite">{message}</p>
+				<p class="mt-4 leading-relaxed text-danger" role="alert">{message}</p>
 			{/if}
 			</form>
 		{/if}

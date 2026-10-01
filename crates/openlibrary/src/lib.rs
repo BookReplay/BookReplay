@@ -20,6 +20,10 @@ const IDLE_DELAY: Duration = Duration::from_secs(5);
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60 * 60);
+/// Attempts before a book that keeps failing is left for manual identification.
+const MAX_RETRIES: i32 = 8;
+/// Pause for the whole queue after a provider failure, unless the provider asks for longer.
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(sqlx::FromRow)]
 struct PendingBook {
@@ -30,7 +34,7 @@ struct PendingBook {
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
-    docs: Vec<SearchDocument>,
+    docs: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,7 +53,7 @@ struct SearchDocument {
 mod candidate;
 pub use candidate::{BookCandidate, Provider};
 use candidate::{
-    GoogleResponse, author_name, clean_title, needs_more, normalize, rank, supplement,
+    GoogleResponse, GoogleVolume, author_name, clean_title, needs_more, normalize, rank, supplement,
 };
 
 impl From<SearchDocument> for BookCandidate {
@@ -102,7 +106,9 @@ impl std::error::Error for SearchError {}
 pub struct OpenLibrary {
     client: Client,
     search_url: String,
-    pacer: Arc<Mutex<RequestPacer>>,
+    // One pacer per provider, so a Google request never waits on Open Library's interval.
+    open_library_pacer: Arc<Mutex<RequestPacer>>,
+    google_pacer: Arc<Mutex<RequestPacer>>,
     google_key: Option<String>,
     google_url: String,
 }
@@ -118,7 +124,8 @@ impl OpenLibrary {
             google_key: None,
             google_url: "https://www.googleapis.com/books/v1/volumes".into(),
             search_url: search_url.to_owned(),
-            pacer: Arc::new(Mutex::new(RequestPacer::default())),
+            open_library_pacer: Arc::default(),
+            google_pacer: Arc::default(),
         }
     }
 
@@ -137,58 +144,74 @@ impl OpenLibrary {
         authors: &[&str],
         manual: bool,
     ) -> Result<Vec<BookCandidate>, SearchError> {
-        let mut books = Vec::new();
-        let mut failure = None;
-        for provider in [Provider::OpenLibrary, Provider::GoogleBooks] {
-            if provider == Provider::GoogleBooks
-                && (self.google_key.is_none() || (!manual && !needs_more(&books, title)))
-            {
-                continue;
+        let (books, failure) = if manual && self.google_key.is_some() {
+            // An interactive search asks both providers at once.
+            let ((mut books, first), (google, second)) = tokio::join!(
+                self.provider_candidates(Provider::OpenLibrary, title, authors, manual, Vec::new()),
+                self.provider_candidates(Provider::GoogleBooks, title, authors, manual, Vec::new()),
+            );
+            books.extend(google);
+            rank(&mut books, title, authors);
+            (books, prefer_transient(first, second))
+        } else {
+            let (books, first) = self
+                .provider_candidates(Provider::OpenLibrary, title, authors, manual, Vec::new())
+                .await;
+            if self.google_key.is_some() && needs_more(&books, title) {
+                let (books, second) = self
+                    .provider_candidates(Provider::GoogleBooks, title, authors, manual, books)
+                    .await;
+                (books, prefer_transient(first, second))
+            } else {
+                (books, first)
             }
-            let clean = clean_title(title);
-            let mut queries = vec![(clean, authors)];
-            if !authors.is_empty() {
-                queries.push((clean, &[]));
-            }
-            if let Some(short) = shortened_title(clean) {
-                queries.push((short, &[]));
-            }
-            for (query, query_authors) in queries {
-                match self.request(provider, query, query_authors, manual).await {
-                    Ok(found) => {
-                        for book in found {
-                            if book.validate()
-                                && !books.iter().any(|b: &BookCandidate| {
-                                    b.provider == book.provider && b.provider_id == book.provider_id
-                                })
-                            {
-                                books.push(book);
-                            }
-                        }
-                        rank(&mut books, title, authors);
-                        if !needs_more(&books, title) {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        // Keep transient failures over terminal ones so the queue can retry.
-                        if failure
-                            .as_ref()
-                            .is_none_or(|e: &SearchError| !e.is_transient())
-                        {
-                            failure = Some(error);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        };
         if books.is_empty()
             && let Some(error) = failure
         {
             return Err(error);
         }
         Ok(books)
+    }
+
+    /// Runs one provider's query variants, adding its valid results to `books`.
+    async fn provider_candidates(
+        &self,
+        provider: Provider,
+        title: &str,
+        authors: &[&str],
+        manual: bool,
+        mut books: Vec<BookCandidate>,
+    ) -> (Vec<BookCandidate>, Option<SearchError>) {
+        let clean = clean_title(title);
+        let mut queries = vec![(clean, authors)];
+        if !authors.is_empty() {
+            queries.push((clean, &[]));
+        }
+        if let Some(short) = shortened_title(clean) {
+            queries.push((short, &[]));
+        }
+        for (query, query_authors) in queries {
+            match self.request(provider, query, query_authors, manual).await {
+                Ok(found) => {
+                    for book in found {
+                        if book.validate()
+                            && !books.iter().any(|b: &BookCandidate| {
+                                b.provider == book.provider && b.provider_id == book.provider_id
+                            })
+                        {
+                            books.push(book);
+                        }
+                    }
+                    rank(&mut books, title, authors);
+                    if !needs_more(&books, title) {
+                        break;
+                    }
+                }
+                Err(error) => return (books, Some(error)),
+            }
+        }
+        (books, None)
     }
 
     async fn request(
@@ -198,7 +221,7 @@ impl OpenLibrary {
         authors: &[&str],
         manual: bool,
     ) -> Result<Vec<BookCandidate>, SearchError> {
-        self.wait().await;
+        self.wait(provider).await;
         let title = normalize(query);
         let author = authors
             .iter()
@@ -253,25 +276,53 @@ impl OpenLibrary {
             Provider::OpenLibrary => response
                 .json::<SearchResponse>()
                 .await
-                .map(|response| response.docs.into_iter().map(Into::into).collect())
+                .map(|response| {
+                    // One unexpected document must not discard the rest of the response.
+                    response
+                        .docs
+                        .into_iter()
+                        .filter_map(|doc| serde_json::from_value::<SearchDocument>(doc).ok())
+                        .map(Into::into)
+                        .collect()
+                })
                 .map_err(|error| SearchError::Malformed(error.without_url())),
             Provider::GoogleBooks => response
                 .json::<GoogleResponse>()
                 .await
                 .map(|response| {
                     let _ = response.total_items;
-                    response.items.into_iter().map(Into::into).collect()
+                    response
+                        .items
+                        .into_iter()
+                        .filter_map(|item| serde_json::from_value::<GoogleVolume>(item).ok())
+                        .map(Into::into)
+                        .collect()
                 })
                 .map_err(|error| SearchError::Malformed(error.without_url())),
         }
     }
 
-    async fn wait(&self) {
+    async fn wait(&self, provider: Provider) {
+        let pacer = match provider {
+            Provider::OpenLibrary => &self.open_library_pacer,
+            Provider::GoogleBooks => &self.google_pacer,
+        };
         let request_at = {
-            let mut pacer = self.pacer.lock().unwrap_or_else(|error| error.into_inner());
+            let mut pacer = pacer.lock().unwrap_or_else(|error| error.into_inner());
             pacer.reserve(Instant::now())
         };
         tokio::time::sleep_until(request_at.into()).await;
+    }
+}
+
+// Keep transient failures over terminal ones so the queue can retry.
+fn prefer_transient(
+    first: Option<SearchError>,
+    second: Option<SearchError>,
+) -> Option<SearchError> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(if first.is_transient() { first } else { second }),
+        (first, second) => first.or(second),
     }
 }
 
@@ -424,9 +475,18 @@ async fn process_next_book(
             Ok(WorkerStep::Processed)
         }
         SearchOutcome::Transient(failure) => {
-            let delay = retry_delay(book.retry_count, failure.retry_after);
-            schedule_retry(connection, &book, &failure.message, delay).await?;
-            Ok(WorkerStep::Pause(delay))
+            if book.retry_count >= MAX_RETRIES {
+                mark_checked(connection, &book, Some(&failure.message)).await?;
+                error!(
+                    book_id = book.id,
+                    "book enrichment gave up after repeated failures; identify the book manually"
+                );
+            } else {
+                let delay = retry_delay(book.retry_count, failure.retry_after);
+                schedule_retry(connection, &book, &failure.message, delay).await?;
+            }
+            // Other pending books wait only for the cooldown, not for this book's backoff.
+            Ok(WorkerStep::Pause(queue_pause(failure.retry_after)))
         }
         SearchOutcome::Terminal(message) => {
             mark_checked(connection, &book, Some(&message)).await?;
@@ -492,7 +552,15 @@ fn retry_delay(retry_count: i32, retry_after: Option<Duration>) -> Duration {
         .saturating_mul(2_u32.saturating_pow(exponent))
         .min(MAX_RETRY_DELAY);
 
-    retry_after.map_or(backoff, |delay| delay.max(backoff))
+    retry_after
+        .map_or(backoff, |delay| delay.max(backoff))
+        .min(MAX_RETRY_DELAY)
+}
+
+fn queue_pause(retry_after: Option<Duration>) -> Duration {
+    retry_after
+        .map_or(FAILURE_COOLDOWN, |delay| delay.max(FAILURE_COOLDOWN))
+        .min(MAX_RETRY_DELAY)
 }
 
 async fn save_metadata(
@@ -584,8 +652,9 @@ mod tests {
     use reqwest::{Client, StatusCode, header::HeaderValue};
 
     use super::{
-        MAX_RETRY_DELAY, OpenLibrary, SEARCH_FIELDS, SearchError, SearchOutcome, from_kindle_title,
-        is_transient_status, parse_retry_after, retry_delay, search_with_fallback, shortened_title,
+        FAILURE_COOLDOWN, MAX_RETRY_DELAY, OpenLibrary, SEARCH_FIELDS, SearchError, SearchOutcome,
+        from_kindle_title, is_transient_status, parse_retry_after, queue_pause, retry_delay,
+        search_with_fallback, shortened_title,
     };
 
     pub(super) async fn mock_open_library(
@@ -674,6 +743,36 @@ mod tests {
             retry_delay(0, Some(Duration::from_secs(90))),
             Duration::from_secs(90)
         );
+    }
+
+    #[test]
+    fn provider_delays_are_bounded_and_the_queue_pauses_briefly() {
+        let day = Some(Duration::from_secs(24 * 60 * 60));
+
+        assert_eq!(retry_delay(0, day), MAX_RETRY_DELAY);
+        assert_eq!(queue_pause(day), MAX_RETRY_DELAY);
+        assert_eq!(queue_pause(None), FAILURE_COOLDOWN);
+        assert_eq!(queue_pause(Some(Duration::from_secs(5))), FAILURE_COOLDOWN);
+        assert_eq!(
+            queue_pause(Some(Duration::from_secs(300))),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[tokio::test]
+    async fn unexpected_documents_are_skipped_without_failing_the_search() {
+        let (url, _, server) = mock_open_library(vec![
+            r#"{"docs":[{"key":"/works/OL1W"},{"title":42},{"key":"/works/OL2W","title":"Kept"}]}"#,
+        ])
+        .await;
+        let books = OpenLibrary::with_search_url(Client::new(), &url)
+            .search("Kept")
+            .await
+            .expect("search should succeed");
+        server.abort();
+
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].title, "Kept");
     }
 
     #[test]
@@ -1159,5 +1258,42 @@ mod database_tests {
         .unwrap();
         assert_eq!(row, ("Book (Author)".into(), "/works/OL2W".into(), true));
         server.abort();
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn failing_book_is_retried_then_abandoned_without_stalling_the_queue(pool: sqlx::PgPool) {
+        // An address nothing listens on: every search is a transient request failure.
+        let service = OpenLibrary::with_search_url(Client::new(), "http://127.0.0.1:9/search.json");
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query(
+            "INSERT INTO books (kindle_title, title, retry_count) VALUES ('Fresh', 'Fresh', 0), ('Worn out', 'Worn out', $1)",
+        )
+        .bind(MAX_RETRIES)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let WorkerStep::Pause(pause) =
+                process_next_book(&mut connection, &service).await.unwrap()
+            else {
+                panic!("a provider failure should pause the queue");
+            };
+            assert_eq!(pause, FAILURE_COOLDOWN);
+        }
+        let rows: Vec<(String, bool, i32, bool)> = sqlx::query_as(
+            "SELECT kindle_title, metadata_checked_at IS NOT NULL, retry_count, last_error IS NOT NULL FROM books ORDER BY kindle_title",
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                ("Fresh".into(), false, 1, true),
+                ("Worn out".into(), true, MAX_RETRIES, true)
+            ]
+        );
     }
 }

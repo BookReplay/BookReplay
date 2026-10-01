@@ -13,7 +13,9 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			adapter: adapter()
+			adapter: adapter({ precompress: true }),
+			// Emitted as a <meta> policy in each prerendered page; the server adds the remaining directives.
+			csp: { mode: 'hash', directives: { 'script-src': ['self'] } }
 		})
 	],
 	server: {

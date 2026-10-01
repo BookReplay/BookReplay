@@ -104,15 +104,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_every_entry_in_the_current_export() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../My Clippings.txt");
-        let Ok(file) = std::fs::read_to_string(path) else {
-            return;
-        };
+    fn parses_every_entry_in_a_synthetic_export() {
+        let file = include_str!("fixtures/clippings.txt");
+        let clippings = parse_clippings(file);
 
+        assert_eq!(clippings.len(), file.matches("==========").count());
+        assert_eq!(clippings[1].content, "A note with\ntwo lines.");
+        assert_eq!(clippings[2].content, "");
         assert_eq!(
-            parse_clippings(&file).len(),
-            file.matches("==========").count()
+            from_kindle_title(&clippings[3].book),
+            (
+                "Livre inventé (French Edition)",
+                vec!["Auteur, Un", "Autre, Une"]
+            )
         );
     }
 }

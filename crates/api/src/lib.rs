@@ -1,15 +1,16 @@
+mod error;
 mod features;
 mod security;
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
-use axum::{Router, http::StatusCode, middleware, routing::get};
+use axum::{Router, extract::State, http::StatusCode, middleware, routing::get};
 use axum_login::AuthManagerLayerBuilder;
 use features::auth::{AuthBackend, access_guard};
 use features::books::{BooksState, router as books_router};
 use features::clippings::{ClippingsState, router as clippings_router};
 use features::reviews::{ReviewsState, router as reviews_router};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use time::Duration as TimeDuration;
 use tower_http::services::ServeDir;
 use tower_sessions::{
@@ -20,10 +21,19 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cookie_secure =
-        std::env::var("SESSION_COOKIE_SECURE").map_or(Ok(false), |value| value.parse::<bool>())?;
+    let cookie_secure = std::env::var("SESSION_COOKIE_SECURE")
+        .map_or(Ok(false), |value| value.parse::<bool>())
+        .map_err(|_| "SESSION_COOKIE_SECURE must be exactly true or false")?;
+    let bind_address = bind_address()?;
     let origin = std::env::var("APP_ORIGIN").unwrap_or_else(|_| "http://localhost:2665".to_owned());
-    let security = security::Security::new(&origin, cookie_secure)?;
+    let client_ip_header = std::env::var("CLIENT_IP_HEADER")
+        .ok()
+        .filter(|name| !name.trim().is_empty());
+    let security = security::Security::new(&origin, cookie_secure)?
+        .with_client_ip_header(client_ip_header.as_deref().map(str::trim))?;
+    let enrichment = std::env::var("METADATA_ENRICHMENT")
+        .map_or(Ok(true), |value| value.parse::<bool>())
+        .map_err(|_| "METADATA_ENRICHMENT must be exactly true or false")?;
     let setup_secret = std::env::var("SETUP_SECRET")
         .ok()
         .filter(|secret| !secret.is_empty());
@@ -48,24 +58,34 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     info!("connecting to database");
-    let database_url = std::env::var("DATABASE_URL")?;
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await?;
+    let database_url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is required")?;
+    let pool = connect_when_ready(&database_url).await?;
 
     info!("running database migrations");
-    sqlx::migrate!("../../migrations").run(&pool).await?;
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .map_err(|error| format!("database migration failed: {error}"))?;
 
     let session_store = PostgresStore::new(pool.clone());
-    session_store.migrate().await?;
+    session_store.migrate().await.map_err(|error| {
+        format!(
+            "session table setup failed ({})",
+            error::database_cause(&error)
+        )
+    })?;
     let cleanup_store = session_store.clone();
     tokio::spawn(async move {
-        if let Err(_error) = cleanup_store
-            .continuously_delete_expired(Duration::from_secs(60))
-            .await
-        {
-            error!("expired session cleanup stopped");
+        // Keep cleaning after a failed pass, such as a database restart.
+        loop {
+            if let Err(_error) = cleanup_store
+                .clone()
+                .continuously_delete_expired(Duration::from_secs(60 * 60))
+                .await
+            {
+                error!("expired session cleanup failed; retrying in one minute");
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
 
@@ -81,32 +101,37 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let auth_layer = AuthManagerLayerBuilder::new(auth_backend.clone(), session_layer).build();
     info!("database is ready");
 
-    let contact_email = std::env::var("OPEN_LIBRARY_CONTACT_EMAIL")
-        .ok()
-        .filter(|email| !email.trim().is_empty());
-    let user_agent = contact_email.as_ref().map_or_else(
-        || concat!("bookreplay-api/", env!("CARGO_PKG_VERSION")).to_owned(),
-        |email| {
-            format!(
-                "bookreplay-api/{} ({})",
-                env!("CARGO_PKG_VERSION"),
-                email.trim()
-            )
-        },
-    );
-    if contact_email.is_none() {
-        warn!(
-            "OPEN_LIBRARY_CONTACT_EMAIL is not configured; using conservative Open Library request pacing"
+    let open_library = if enrichment {
+        let contact_email = std::env::var("OPEN_LIBRARY_CONTACT_EMAIL")
+            .ok()
+            .filter(|email| !email.trim().is_empty());
+        let user_agent = contact_email.as_ref().map_or_else(
+            || concat!("bookreplay-api/", env!("CARGO_PKG_VERSION")).to_owned(),
+            |email| {
+                format!(
+                    "bookreplay-api/{} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    email.trim()
+                )
+            },
         );
-    }
-
-    let open_library_client = reqwest::Client::builder()
-        .user_agent(user_agent)
-        .timeout(Duration::from_secs(10))
-        .build()?;
-    let open_library = bookreplay_openlibrary::OpenLibrary::new(open_library_client)
-        .with_google_key(std::env::var("GOOGLE_BOOKS_API_KEY").ok());
-    bookreplay_openlibrary::spawn_enrichment_worker(database_url, open_library.clone());
+        if contact_email.is_none() {
+            warn!(
+                "OPEN_LIBRARY_CONTACT_EMAIL is not configured; metadata requests carry no contact address"
+            );
+        }
+        let client = reqwest::Client::builder()
+            .user_agent(user_agent)
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        let open_library = bookreplay_openlibrary::OpenLibrary::new(client)
+            .with_google_key(std::env::var("GOOGLE_BOOKS_API_KEY").ok());
+        bookreplay_openlibrary::spawn_enrichment_worker(database_url, open_library.clone());
+        Some(open_library)
+    } else {
+        info!("metadata enrichment is disabled; no book titles leave this instance");
+        None
+    };
 
     let api = Router::new()
         .route("/version", get(|| async { env!("CARGO_PKG_VERSION") }))
@@ -127,18 +152,124 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             reviews_router(ReviewsState { pool: pool.clone() }),
         )
         .fallback(not_found);
+    let site = ServeDir::new("app/web/build")
+        .precompressed_br()
+        .precompressed_gzip();
     let app = Router::new()
         .nest("/api", api)
-        .fallback_service(ServeDir::new("app/web/build"))
-        .layer(middleware::from_fn_with_state(pool, access_guard))
+        .fallback_service(site)
+        .layer(middleware::from_fn_with_state(pool.clone(), access_guard))
         .layer(auth_layer)
+        // Added after the session layer: build assets and health probes are public and need no database session.
+        .nest_service(
+            "/_app",
+            ServeDir::new("app/web/build/_app")
+                .precompressed_br()
+                .precompressed_gzip(),
+        )
+        .route("/healthz", get(health).with_state(pool))
         .layer(middleware::from_fn_with_state(security, security::guard));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:2665").await?;
+    let listener = tokio::net::TcpListener::bind(bind_address)
+        .await
+        .map_err(|error| format!("could not listen on {bind_address}: {error}"))?;
 
     info!(address = %listener.local_addr()?, "API is listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
+    info!("shutdown complete");
     Ok(())
+}
+
+/// Waits for PostgreSQL to accept connections, as when both containers restart together.
+/// Rejected credentials and other non-network failures are reported at once.
+async fn connect_when_ready(database_url: &str) -> Result<PgPool, String> {
+    const ATTEMPTS: u32 = 30;
+    let mut attempt = 1;
+    loop {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await
+        {
+            Ok(pool) => return Ok(pool),
+            Err(sqlx::Error::Io(_)) if attempt < ATTEMPTS => {
+                warn!(
+                    attempt,
+                    "database is not accepting connections yet; retrying in one second"
+                );
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not connect to the database ({}); check DATABASE_URL and that PostgreSQL is running",
+                    error::database_cause(&error)
+                ));
+            }
+        }
+    }
+}
+
+fn bind_address() -> Result<SocketAddr, &'static str> {
+    std::env::var("BIND_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:2665".to_owned())
+        .parse()
+        .map_err(|_| "BIND_ADDR must be an IP address and port, such as 127.0.0.1:2665")
+}
+
+async fn health(State(pool): State<PgPool>) -> StatusCode {
+    match sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&pool)
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT,
+        Err(_error) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
+            info!("shutdown signal received; finishing open requests");
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+    info!("shutdown signal received; finishing open requests");
+}
+
+/// Container health probe: succeeds when the running server answers `/healthz`.
+pub async fn healthcheck() -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut address = bind_address()?;
+    if address.ip().is_unspecified() {
+        address.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+    }
+    let probe = async {
+        let mut stream = tokio::net::TcpStream::connect(address).await?;
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut status = [0_u8; 12];
+        stream.read_exact(&mut status).await?;
+        Ok::<_, std::io::Error>(status)
+    };
+    match tokio::time::timeout(Duration::from_secs(3), probe).await {
+        Ok(Ok(status)) if &status == b"HTTP/1.1 204" => Ok(()),
+        _ => Err("server is not healthy".into()),
+    }
 }
 
 /// Operator-only recovery: reads a new password from stdin, never arguments or logs.

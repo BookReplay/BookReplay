@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
+	import { loadProgress, progress } from '$lib/progress.svelte';
 
 	const items = [
 		{ label: 'Today', href: '/' },
@@ -10,34 +11,12 @@
 		{ label: 'Progress', href: '/stats/' },
 		{ label: 'Settings', href: '/settings/' }
 	];
-	let streak = $state(0);
-	let requestId = 0;
-
-	onMount(() => {
-		const loadStreak = async () => {
-			const currentRequest = ++requestId;
-			try {
-				const response = await fetch('/api/reviews/streak');
-				if (!response.ok) return;
-				const progress = (await response.json()) as { streak: number };
-				if (currentRequest === requestId) streak = progress.streak;
-			} catch {
-				// Leave the badge hidden if progress is unavailable.
-			}
-		};
-		const updateStreak = (event: Event) => {
-			requestId += 1;
-			streak = (event as CustomEvent<number>).detail;
-		};
-
-		void loadStreak();
-		window.addEventListener('bookreplay:streak', updateStreak);
-		return () => window.removeEventListener('bookreplay:streak', updateStreak);
-	});
+	onMount(() => void loadProgress());
 
 	function isActive(href: string) {
-		if (href === '/?view=books') return browser && page.url.pathname === '/' && page.url.searchParams.get('view') === 'books';
-		return page.url.pathname === href && (href !== '/' || !browser || !page.url.searchParams.has('view'));
+		const inBooks = browser && page.url.pathname === '/' && (page.url.searchParams.get('view') === 'books' || page.url.searchParams.has('book'));
+		if (href === '/?view=books') return inBooks;
+		return page.url.pathname === href && (href !== '/' || !inBooks);
 	}
 </script>
 
@@ -45,7 +24,7 @@
 
 	<nav aria-label="Primary navigation">
 		<ul class="nav-items">
-			{#each items as item}
+			{#each items as item (item.href)}
 				<li>
 					<a
 						class:active={isActive(item.href)}
@@ -71,7 +50,7 @@
 							{/if}
 						</svg>
 						<span>{item.label}</span>
-						{#if item.label === 'Review' && streak > 0}<span class="nav-streak" aria-label={`${streak}-day streak`}>{streak}</span>{/if}
+						{#if item.label === 'Review' && progress.streak > 0}<span class="nav-streak" aria-label={`${progress.streak}-day streak`}>{progress.streak}</span>{/if}
 					</a>
 				</li>
 			{/each}

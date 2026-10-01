@@ -26,6 +26,7 @@ pub struct SessionHighlight {
 pub struct ReviewState {
     pub review_count: i32,
     pub current_interval_days: i32,
+    pub next_review_at: Option<OffsetDateTime>,
     pub archived_at: Option<OffsetDateTime>,
 }
 
@@ -60,10 +61,12 @@ struct DailyProgress {
     goal_reached: bool,
 }
 
-#[derive(FromRow, Serialize)]
+#[derive(Serialize)]
 pub struct StreakResponse {
     pub streak: i32,
     pub daily_revision_count: i32,
+    /// Highlights a review session could show now: due ones plus never-reviewed ones.
+    pub due_count: i64,
 }
 
 pub async fn session(
@@ -102,7 +105,7 @@ pub async fn find_for_update(
     highlight_id: i64,
 ) -> Result<Option<ReviewState>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT review_count, current_interval_days, archived_at \
+        "SELECT review_count, current_interval_days, next_review_at, archived_at \
          FROM clippings WHERE id = $1 AND user_id = $2 AND btrim(content) <> '' FOR UPDATE",
     )
     .bind(highlight_id)
@@ -174,7 +177,20 @@ pub async fn streak(pool: &PgPool, user_id: i16) -> Result<StreakResponse, sqlx:
     .bind(user_id)
     .fetch_one(pool)
     .await?;
-    Ok(current_progress(&state, OffsetDateTime::now_utc().date()))
+    let now = OffsetDateTime::now_utc();
+    let due_count = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM clippings \
+         WHERE user_id = $1 AND archived_at IS NULL AND btrim(content) <> '' \
+               AND (next_review_at <= $2 OR (review_count = 0 AND next_review_at IS NULL))",
+    )
+    .bind(user_id)
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    Ok(StreakResponse {
+        due_count,
+        ..current_progress(&state, now.date())
+    })
 }
 
 fn current_progress(state: &StreakState, today: Date) -> StreakResponse {
@@ -190,6 +206,7 @@ fn current_progress(state: &StreakState, today: Date) -> StreakResponse {
         } else {
             0
         },
+        due_count: 0,
     }
 }
 
@@ -482,5 +499,65 @@ mod tests {
             .collect::<HashSet<_>>();
 
         assert_eq!(selected_ids, HashSet::from([1, 2, 4]));
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use bookreplay_core::Clipping;
+
+    use super::*;
+    use crate::features::{clippings::model::insert, reviews::scheduler::schedule_review};
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn a_reviewed_highlight_leaves_the_due_count_until_it_is_due_again(pool: PgPool) {
+        let user_id: i16 = sqlx::query_scalar(
+            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        ).fetch_one(&pool).await.unwrap();
+        let clippings = ["First", "Second", ""].map(|content| Clipping {
+            book: "Book (Author)".into(),
+            metadata: format!("Location {content}"),
+            content: content.into(),
+        });
+        insert(&pool, user_id, &clippings).await.unwrap();
+        assert_eq!(streak(&pool, user_id).await.unwrap().due_count, 2);
+
+        let highlight_id: i64 =
+            sqlx::query_scalar("SELECT id FROM clippings WHERE content = 'First'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let now = OffsetDateTime::now_utc();
+        let mut transaction = pool.begin().await.unwrap();
+        let state = find_for_update(&mut transaction, user_id, highlight_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.next_review_at.is_none());
+        let schedule = schedule_review(now, 0, 0, ReviewRating::Soon);
+        let response = save_review(
+            &mut transaction,
+            user_id,
+            highlight_id,
+            &state,
+            ReviewRating::Soon,
+            &schedule,
+            now,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(response.daily_revision_count, 1);
+
+        let mut transaction = pool.begin().await.unwrap();
+        let state = find_for_update(&mut transaction, user_id, highlight_id)
+            .await
+            .unwrap()
+            .unwrap();
+        // The controller answers 409 while this date is in the future.
+        assert!(state.next_review_at.is_some_and(|date| date > now));
+        drop(transaction);
+        assert_eq!(streak(&pool, user_id).await.unwrap().due_count, 1);
     }
 }

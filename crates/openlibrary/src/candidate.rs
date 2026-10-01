@@ -219,7 +219,7 @@ pub(crate) struct GoogleResponse {
     #[serde(rename = "totalItems")]
     pub total_items: u64,
     #[serde(default)]
-    pub items: Vec<GoogleVolume>,
+    pub items: Vec<serde_json::Value>,
 }
 #[derive(Deserialize)]
 pub(crate) struct GoogleVolume {
