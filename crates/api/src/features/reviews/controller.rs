@@ -12,7 +12,7 @@ use super::{
     scheduler::{ReviewRating, schedule_review},
 };
 use crate::{
-    error::{ApiError, database_cause, owner_id},
+    error::{ApiError, database_cause, user_id},
     features::auth::AuthSession,
 };
 
@@ -32,7 +32,7 @@ pub async fn session(
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Vec<model::SessionHighlight>>, ApiError> {
     let limit = query.limit.unwrap_or(10).clamp(1, 100);
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let highlights = model::session(&state.pool, user_id, limit, OffsetDateTime::now_utc())
         .await
         .map_err(internal_error)?;
@@ -47,7 +47,7 @@ pub async fn review(
 ) -> Result<Json<model::ReviewResponse>, ApiError> {
     let Json(request) =
         request.map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid review rating"))?;
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let mut transaction = state.pool.begin().await.map_err(internal_error)?;
     let state = model::find_for_update(&mut transaction, user_id, highlight_id)
         .await
@@ -95,7 +95,7 @@ pub async fn streak(
     State(state): State<ReviewsState>,
     auth_session: AuthSession,
 ) -> Result<Json<model::StreakResponse>, ApiError> {
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let streak = model::streak(&state.pool, user_id)
         .await
         .map_err(internal_error)?;

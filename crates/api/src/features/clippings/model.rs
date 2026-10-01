@@ -6,7 +6,7 @@ use sqlx::PgPool;
 
 pub async fn update_content(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     clipping_id: i64,
     content: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -28,7 +28,7 @@ pub struct ImportResult {
 
 pub async fn insert(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     clippings: &[Clipping],
 ) -> Result<ImportResult, sqlx::Error> {
     let mut transaction = pool.begin().await?;
@@ -41,9 +41,10 @@ pub async fn insert(
         }
         let (title, authors) = from_kindle_title(&clipping.book);
         inserted_books += sqlx::query(
-            "INSERT INTO books (kindle_title, title, authors) VALUES ($1, $2, $3) \
-             ON CONFLICT (kindle_title) DO NOTHING",
+            "INSERT INTO books (user_id, kindle_title, title, authors) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (user_id, kindle_title) DO NOTHING",
         )
+        .bind(user_id)
         .bind(&clipping.book)
         .bind(title)
         .bind(authors)
@@ -51,10 +52,12 @@ pub async fn insert(
         .await?
         .rows_affected() as usize;
 
-        let book_id: i64 = sqlx::query_scalar("SELECT id FROM books WHERE kindle_title = $1")
-            .bind(&clipping.book)
-            .fetch_one(&mut *transaction)
-            .await?;
+        let book_id: i64 =
+            sqlx::query_scalar("SELECT id FROM books WHERE user_id = $1 AND kindle_title = $2")
+                .bind(user_id)
+                .bind(&clipping.book)
+                .fetch_one(&mut *transaction)
+                .await?;
         book_ids.insert(clipping.book.as_str(), book_id);
     }
 
@@ -106,8 +109,8 @@ mod database_tests {
     #[sqlx::test(migrations = "../../migrations")]
     #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
     async fn reimport_after_an_edit_does_not_duplicate_the_highlight(pool: PgPool) {
-        let user_id: i16 = sqlx::query_scalar(
-            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
         ).fetch_one(&pool).await.unwrap();
         // Longer than a btree index row can hold when stored as text.
         let long: String = (0..4_000).map(|n| format!("{n:x}")).collect();
@@ -140,5 +143,30 @@ mod database_tests {
                 .await
                 .unwrap();
         assert_eq!(stored, ["Edited"]);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn a_user_cannot_edit_another_users_highlight(pool: PgPool) {
+        let [first, second]: [i64; 2] = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (name, email, password_hash) VALUES ('First', 'first@example.org', 'unused'), ('Second', 'second@example.org', 'unused') RETURNING id"
+        ).fetch_all(&pool).await.unwrap().try_into().unwrap();
+        insert(&pool, first, &[clipping("Location 1", "Original")])
+            .await
+            .unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT id FROM clippings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            update_content(&pool, second, id, "Edited").await.unwrap(),
+            None
+        );
+        let stored: String = sqlx::query_scalar("SELECT content FROM clippings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, "Original");
     }
 }

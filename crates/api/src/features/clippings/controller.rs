@@ -1,6 +1,6 @@
 use super::{ClippingsState, model, view::ImportResponse};
 use crate::{
-    error::{ApiError, database_cause, owner_id},
+    error::{ApiError, database_cause, user_id},
     features::auth::AuthSession,
 };
 use axum::{
@@ -26,7 +26,7 @@ pub async fn import(
         .map(|clipping| clipping.content.clone().into_boxed_str());
     info!(parsed, "clippings file parsed");
 
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let result = model::insert(&state.pool, user_id, &clippings)
         .await
         .map_err(|error| {
@@ -82,7 +82,7 @@ pub async fn update(
         ));
     }
 
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let content = model::update_content(&state.pool, user_id, clipping_id, &request.content)
         .await
         .map_err(|error| {

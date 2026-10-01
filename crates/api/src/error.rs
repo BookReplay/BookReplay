@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::features::auth::AuthSession;
 
 #[derive(Debug)]
-pub(crate) struct ApiError {
+pub struct ApiError {
     pub(crate) status: StatusCode,
     message: &'static str,
 }
@@ -19,7 +19,7 @@ struct ErrorResponse {
 }
 
 impl ApiError {
-    pub(crate) fn new(status: StatusCode, message: &'static str) -> Self {
+    pub fn new(status: StatusCode, message: &'static str) -> Self {
         Self { status, message }
     }
 
@@ -40,7 +40,8 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub(crate) fn owner_id(auth_session: AuthSession) -> Result<i16, ApiError> {
+/// The signed-in account, which every library query must be filtered by.
+pub fn user_id(auth_session: AuthSession) -> Result<i64, ApiError> {
     auth_session
         .user
         .map(|user| user.id)

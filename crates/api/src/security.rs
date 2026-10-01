@@ -17,14 +17,18 @@ pub(crate) struct Security {
     origin: HeaderValue,
     secure: bool,
     client_ip_header: Option<HeaderName>,
+    client_attempts: usize,
+    total_attempts: usize,
+    /// Limited in addition to the built-in authentication routes.
+    limited_paths: &'static [&'static str],
     attempts: Arc<Mutex<Attempts>>,
 }
 
 const ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
 /// Authentication attempts allowed per client address in one window.
-const CLIENT_ATTEMPTS: usize = 10;
+pub(crate) const CLIENT_ATTEMPTS: usize = 10;
 /// Ceiling across all clients, so many addresses cannot multiply password guesses.
-const TOTAL_ATTEMPTS: usize = 60;
+pub(crate) const TOTAL_ATTEMPTS: usize = 60;
 
 #[derive(Default)]
 struct Attempts {
@@ -54,8 +58,23 @@ impl Security {
             origin: HeaderValue::from_str(origin).map_err(|_| "invalid APP_ORIGIN")?,
             secure,
             client_ip_header: None,
+            client_attempts: CLIENT_ATTEMPTS,
+            total_attempts: TOTAL_ATTEMPTS,
+            limited_paths: &[],
             attempts: Arc::default(),
         })
+    }
+
+    pub(crate) fn with_attempt_limits(
+        mut self,
+        client_attempts: usize,
+        total_attempts: usize,
+        limited_paths: &'static [&'static str],
+    ) -> Self {
+        self.client_attempts = client_attempts;
+        self.total_attempts = total_attempts;
+        self.limited_paths = limited_paths;
+        self
     }
 
     /// Names the header in which a trusted reverse proxy reports the client address.
@@ -103,11 +122,11 @@ impl Security {
             }
             !recent.is_empty()
         });
-        if attempts.total.len() >= TOTAL_ATTEMPTS
+        if attempts.total.len() >= self.total_attempts
             || attempts
                 .clients
                 .get(&client)
-                .is_some_and(|recent| recent.len() >= CLIENT_ATTEMPTS)
+                .is_some_and(|recent| recent.len() >= self.client_attempts)
         {
             return false;
         }
@@ -127,19 +146,22 @@ pub(crate) async fn guard(
         if origins.next() != Some(&security.origin) || origins.next().is_some() {
             return (StatusCode::FORBIDDEN, "request origin is not allowed").into_response();
         }
-        if matches!(
-            request.uri().path(),
+        let path = request.uri().path();
+        if (matches!(
+            path,
             "/api/auth/login" | "/api/auth/register" | "/api/auth/password"
-        ) && !security.allow_attempt(
-            security.client(
-                request.headers(),
-                request
-                    .extensions()
-                    .get::<ConnectInfo<SocketAddr>>()
-                    .map(|peer| peer.ip()),
-            ),
-            Instant::now(),
-        ) {
+        ) || security.limited_paths.contains(&path))
+            && !security.allow_attempt(
+                security.client(
+                    request.headers(),
+                    request
+                        .extensions()
+                        .get::<ConnectInfo<SocketAddr>>()
+                        .map(|peer| peer.ip()),
+                ),
+                Instant::now(),
+            )
+        {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [(header::RETRY_AFTER, "60")],
@@ -287,6 +309,20 @@ mod tests {
         }
         assert!(!security.allow_attempt(client(200), now));
         assert!(security.allow_attempt(client(1), now + ATTEMPT_WINDOW));
+    }
+
+    #[test]
+    fn attempt_limits_can_be_raised() {
+        let security = Security::new("https://books.example", true)
+            .unwrap()
+            .with_attempt_limits(CLIENT_ATTEMPTS + 1, TOTAL_ATTEMPTS, &[]);
+        let now = Instant::now();
+        let client = Some(IpAddr::from([192, 0, 2, 1]));
+
+        for _ in 0..=CLIENT_ATTEMPTS {
+            assert!(security.allow_attempt(client, now));
+        }
+        assert!(!security.allow_attempt(client, now));
     }
 
     #[test]

@@ -6,11 +6,11 @@ use std::{net::SocketAddr, time::Duration};
 
 use axum::{Router, extract::State, http::StatusCode, middleware, routing::get};
 use axum_login::AuthManagerLayerBuilder;
-use features::auth::{AuthBackend, access_guard};
+use features::auth::{AccessGuard, AuthBackend, access_guard};
 use features::books::{BooksState, router as books_router};
 use features::clippings::{ClippingsState, router as clippings_router};
 use features::reviews::{ReviewsState, router as reviews_router};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, migrate::Migrator, postgres::PgPoolOptions};
 use time::Duration as TimeDuration;
 use tower_http::services::ServeDir;
 use tower_sessions::{
@@ -20,7 +20,56 @@ use tower_sessions_sqlx_store::PostgresStore;
 use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+pub use error::{ApiError, user_id};
+pub use features::auth::{
+    AuthError, AuthSession, Registration, create_user, hash_password, verify_password,
+};
+
+/// What extension routes are built from.
+#[derive(Clone)]
+pub struct Core {
+    pub pool: PgPool,
+}
+
+/// Additions a build embedding this crate makes to the single-owner application.
+/// The default adds nothing.
+#[derive(Default)]
+pub struct Extension {
+    /// Nested under `/api`, behind the origin check, the session and the access guard.
+    pub routes: Option<fn(Core) -> Router>,
+    /// Paths served without a session; each also covers what lies beneath it.
+    pub public_paths: &'static [&'static str],
+    /// Unsafe-method paths counted against the authentication attempt limits.
+    pub rate_limited_paths: &'static [&'static str],
+    pub limits: Limits,
+    /// Run after the built-in migrations, against the same database.
+    pub migrator: Option<Migrator>,
+}
+
+pub struct Limits {
+    /// Authentication attempts per client address per minute.
+    pub client_attempts: usize,
+    /// Authentication attempts across all clients per minute.
+    pub total_attempts: usize,
+    /// Password hashes computed at once; further requests are told to retry.
+    pub password_jobs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            client_attempts: security::CLIENT_ATTEMPTS,
+            total_attempts: security::TOTAL_ATTEMPTS,
+            password_jobs: features::auth::DEFAULT_PASSWORD_JOBS,
+        }
+    }
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    run_with(Extension::default()).await
+}
+
+pub async fn run_with(extension: Extension) -> Result<(), Box<dyn std::error::Error>> {
     let cookie_secure = std::env::var("SESSION_COOKIE_SECURE")
         .map_or(Ok(false), |value| value.parse::<bool>())
         .map_err(|_| "SESSION_COOKIE_SECURE must be exactly true or false")?;
@@ -30,7 +79,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .filter(|name| !name.trim().is_empty());
     let security = security::Security::new(&origin, cookie_secure)?
-        .with_client_ip_header(client_ip_header.as_deref().map(str::trim))?;
+        .with_client_ip_header(client_ip_header.as_deref().map(str::trim))?
+        .with_attempt_limits(
+            extension.limits.client_attempts,
+            extension.limits.total_attempts,
+            extension.rate_limited_paths,
+        );
+    features::auth::allow_password_jobs(extension.limits.password_jobs);
     let enrichment = std::env::var("METADATA_ENRICHMENT")
         .map_or(Ok(true), |value| value.parse::<bool>())
         .map_err(|_| "METADATA_ENRICHMENT must be exactly true or false")?;
@@ -62,10 +117,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pool = connect_when_ready(&database_url).await?;
 
     info!("running database migrations");
-    sqlx::migrate!("../../migrations")
+    let mut migrator = sqlx::migrate!("../../migrations");
+    // Each set of migrations finds the other's versions already applied.
+    migrator.set_ignore_missing(extension.migrator.is_some());
+    migrator
         .run(&pool)
         .await
         .map_err(|error| format!("database migration failed: {error}"))?;
+    if let Some(mut migrator) = extension.migrator {
+        migrator.set_ignore_missing(true);
+        migrator
+            .run(&pool)
+            .await
+            .map_err(|error| format!("extension database migration failed: {error}"))?;
+    }
 
     let session_store = PostgresStore::new(pool.clone());
     session_store.migrate().await.map_err(|error| {
@@ -151,6 +216,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "/reviews",
             reviews_router(ReviewsState { pool: pool.clone() }),
         )
+        .merge(
+            extension
+                .routes
+                .map_or_else(Router::new, |routes| routes(Core { pool: pool.clone() })),
+        )
         .fallback(not_found);
     let site = ServeDir::new("app/web/build")
         .precompressed_br()
@@ -158,7 +228,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .nest("/api", api)
         .fallback_service(site)
-        .layer(middleware::from_fn_with_state(pool.clone(), access_guard))
+        .layer(middleware::from_fn_with_state(
+            AccessGuard {
+                pool: pool.clone(),
+                public_paths: extension.public_paths,
+            },
+            access_guard,
+        ))
         .layer(auth_layer)
         // Added after the session layer: build assets and health probes are public and need no database session.
         .nest_service(
@@ -273,7 +349,8 @@ pub async fn healthcheck() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Operator-only recovery: reads a new password from stdin, never arguments or logs.
-pub async fn reset_owner_password() -> Result<(), Box<dyn std::error::Error>> {
+/// `email` picks the account when the instance has more than one.
+pub async fn reset_owner_password(email: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
     let mut password = String::new();
     std::io::stdin()
@@ -292,7 +369,7 @@ pub async fn reset_owner_password() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&database_url)
         .await
         .map_err(|_| "could not connect to database")?;
-    features::auth::reset_password(&pool, password).await
+    features::auth::reset_password(&pool, email.as_deref(), password).await
 }
 
 async fn not_found() -> (StatusCode, &'static str) {

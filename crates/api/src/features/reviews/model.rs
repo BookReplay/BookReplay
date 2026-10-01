@@ -71,7 +71,7 @@ pub struct StreakResponse {
 
 pub async fn session(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     limit: usize,
     now: OffsetDateTime,
 ) -> Result<Vec<SessionHighlight>, sqlx::Error> {
@@ -101,7 +101,7 @@ pub async fn session(
 
 pub async fn find_for_update(
     transaction: &mut Transaction<'_, Postgres>,
-    user_id: i16,
+    user_id: i64,
     highlight_id: i64,
 ) -> Result<Option<ReviewState>, sqlx::Error> {
     sqlx::query_as(
@@ -116,7 +116,7 @@ pub async fn find_for_update(
 
 pub async fn save_review(
     transaction: &mut Transaction<'_, Postgres>,
-    user_id: i16,
+    user_id: i64,
     highlight_id: i64,
     state: &ReviewState,
     rating: ReviewRating,
@@ -169,10 +169,10 @@ pub async fn save_review(
     })
 }
 
-pub async fn streak(pool: &PgPool, user_id: i16) -> Result<StreakResponse, sqlx::Error> {
+pub async fn streak(pool: &PgPool, user_id: i64) -> Result<StreakResponse, sqlx::Error> {
     let state: StreakState = sqlx::query_as(
         "SELECT revision_streak, last_revision_date, daily_revision_count, daily_revision_date \
-         FROM owner WHERE id = $1",
+         FROM users WHERE id = $1",
     )
     .bind(user_id)
     .fetch_one(pool)
@@ -212,12 +212,12 @@ fn current_progress(state: &StreakState, today: Date) -> StreakResponse {
 
 async fn record_streak(
     transaction: &mut Transaction<'_, Postgres>,
-    user_id: i16,
+    user_id: i64,
     today: Date,
 ) -> Result<DailyProgress, sqlx::Error> {
     let state: StreakState = sqlx::query_as(
         "SELECT revision_streak, last_revision_date, daily_revision_count, daily_revision_date \
-         FROM owner WHERE id = $1 FOR UPDATE",
+         FROM users WHERE id = $1 FOR UPDATE",
     )
     .bind(user_id)
     .fetch_one(&mut **transaction)
@@ -230,7 +230,7 @@ async fn record_streak(
     };
 
     sqlx::query(
-        "UPDATE owner SET revision_streak = $1, last_revision_date = $2, \
+        "UPDATE users SET revision_streak = $1, last_revision_date = $2, \
          daily_revision_count = $3, daily_revision_date = $4 WHERE id = $5",
     )
     .bind(progress.streak)
@@ -512,8 +512,8 @@ mod database_tests {
     #[sqlx::test(migrations = "../../migrations")]
     #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
     async fn a_reviewed_highlight_leaves_the_due_count_until_it_is_due_again(pool: PgPool) {
-        let user_id: i16 = sqlx::query_scalar(
-            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
         ).fetch_one(&pool).await.unwrap();
         let clippings = ["First", "Second", ""].map(|content| Clipping {
             book: "Book (Author)".into(),
@@ -559,5 +559,69 @@ mod database_tests {
         assert!(state.next_review_at.is_some_and(|date| date > now));
         drop(transaction);
         assert_eq!(streak(&pool, user_id).await.unwrap().due_count, 1);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn reviews_and_progress_are_private_to_each_user(pool: PgPool) {
+        let [first, second]: [i64; 2] = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (name, email, password_hash) VALUES ('First', 'first@example.org', 'unused'), ('Second', 'second@example.org', 'unused') RETURNING id"
+        ).fetch_all(&pool).await.unwrap().try_into().unwrap();
+        let clipping = |content: &str| Clipping {
+            book: "Book (Author)".into(),
+            metadata: format!("Location {content}"),
+            content: content.into(),
+        };
+        insert(&pool, first, &[clipping("Mine")]).await.unwrap();
+        insert(
+            &pool,
+            second,
+            &[clipping("Theirs"), clipping("Also theirs")],
+        )
+        .await
+        .unwrap();
+        let highlight_id: i64 =
+            sqlx::query_scalar("SELECT id FROM clippings WHERE content = 'Mine'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let now = OffsetDateTime::now_utc();
+
+        let shown = session(&pool, first, 100, now).await.unwrap();
+        assert_eq!(
+            shown.iter().map(|row| row.highlight_id).collect::<Vec<_>>(),
+            [highlight_id]
+        );
+        assert_eq!(session(&pool, second, 100, now).await.unwrap().len(), 2);
+
+        let mut transaction = pool.begin().await.unwrap();
+        assert!(
+            find_for_update(&mut transaction, second, highlight_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let state = find_for_update(&mut transaction, first, highlight_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let schedule = schedule_review(now, 0, 0, ReviewRating::Soon);
+        save_review(
+            &mut transaction,
+            first,
+            highlight_id,
+            &state,
+            ReviewRating::Soon,
+            &schedule,
+            now,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mine = streak(&pool, first).await.unwrap();
+        let theirs = streak(&pool, second).await.unwrap();
+        assert_eq!((mine.daily_revision_count, mine.due_count), (1, 0));
+        assert_eq!((theirs.daily_revision_count, theirs.due_count), (0, 2));
     }
 }

@@ -11,14 +11,16 @@ use axum::{
 };
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgConnection, PgPool};
 use tokio::sync::Semaphore;
 use tracing::error;
 
 // Held inside blocking work, even if the HTTP request is cancelled.
-static PASSWORD_JOBS: Semaphore = Semaphore::const_new(2);
+static PASSWORD_JOBS: Semaphore = Semaphore::const_new(DEFAULT_PASSWORD_JOBS);
 
-const OWNER_ID: i16 = 1;
+pub(crate) const DEFAULT_PASSWORD_JOBS: usize = 2;
+/// Serializes owner setup, so racing registrations still create one account.
+const SETUP_LOCK: i64 = 4_815_162_342_108_001;
 const INVALID_LOGIN: &str = "invalid email or password";
 const DUMMY_PASSWORD: &str = "bookreplay authentication timing password";
 
@@ -47,22 +49,22 @@ impl AuthBackend {
 }
 
 #[derive(Clone, FromRow)]
-pub struct Owner {
-    pub(crate) id: i16,
+pub struct User {
+    pub(crate) id: i64,
     password_hash: String,
 }
 
-impl fmt::Debug for Owner {
+impl fmt::Debug for User {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Owner")
+            .debug_struct("User")
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
 }
 
-impl AuthUser for Owner {
-    type Id = i16;
+impl AuthUser for User {
+    type Id = i64;
 
     fn id(&self) -> Self::Id {
         self.id
@@ -80,7 +82,7 @@ pub struct Credentials {
 }
 
 impl AuthnBackend for AuthBackend {
-    type User = Owner;
+    type User = User;
     type Credentials = Credentials;
     type Error = AuthError;
 
@@ -89,24 +91,24 @@ impl AuthnBackend for AuthBackend {
         credentials: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         let email = normalize_email(&credentials.email);
-        let owner =
-            sqlx::query_as::<_, Owner>("SELECT id, password_hash FROM owner WHERE email = $1")
+        let user =
+            sqlx::query_as::<_, User>("SELECT id, password_hash FROM users WHERE email = $1")
                 .bind(email)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(AuthError::from_display)?;
 
-        let password_hash = owner.as_ref().map_or_else(
+        let password_hash = user.as_ref().map_or_else(
             || self.dummy_hash.to_string(),
-            |owner| owner.password_hash.clone(),
+            |user| user.password_hash.clone(),
         );
         let password_matches = verify_password(credentials.password, password_hash).await?;
 
-        Ok(if password_matches { owner } else { None })
+        Ok(if password_matches { user } else { None })
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        sqlx::query_as::<_, Owner>("SELECT id, password_hash FROM owner WHERE id = $1")
+        sqlx::query_as::<_, User>("SELECT id, password_hash FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(&self.pool)
             .await
@@ -146,37 +148,90 @@ struct RegisterRequest {
     password: String,
 }
 
+/// Account details that passed validation; the email is trimmed and lowercased.
 #[derive(Debug, PartialEq)]
-struct Registration {
-    email: String,
-    name: String,
-    password: String,
+pub struct Registration {
+    pub email: String,
+    pub name: String,
+    pub password: String,
 }
 
-impl TryFrom<RegisterRequest> for Registration {
-    type Error = &'static str;
-
-    fn try_from(request: RegisterRequest) -> Result<Self, Self::Error> {
-        let email = normalize_email(&request.email);
+impl Registration {
+    pub fn new(email: &str, name: &str, password: String) -> Result<Self, &'static str> {
+        let email = normalize_email(email);
         if !valid_email(&email) {
             return Err("enter a valid email address");
         }
 
-        let name = request.name.trim().to_owned();
+        let name = name.trim().to_owned();
         if !(1..=100).contains(&name.chars().count()) {
             return Err("name must be between 1 and 100 characters");
         }
 
-        if !(12..=128).contains(&request.password.len()) {
+        if !(12..=128).contains(&password.len()) {
             return Err("password must be between 12 and 128 bytes");
         }
 
         Ok(Self {
             email,
             name,
-            password: request.password,
+            password,
         })
     }
+}
+
+impl TryFrom<RegisterRequest> for Registration {
+    type Error = &'static str;
+
+    fn try_from(request: RegisterRequest) -> Result<Self, Self::Error> {
+        Self::new(&request.email, &request.name, request.password)
+    }
+}
+
+/// Stores an account and returns its id. The email must come from [`Registration`];
+/// a duplicate fails with SQLSTATE 23505.
+pub async fn create_user(
+    connection: &mut PgConnection,
+    email: &str,
+    name: &str,
+    password_hash: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(email)
+    .bind(name)
+    .bind(password_hash)
+    .fetch_one(connection)
+    .await
+}
+
+/// Creates the owner unless an account already exists; `None` means one does.
+async fn create_owner(
+    pool: &PgPool,
+    registration: &Registration,
+    password_hash: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(SETUP_LOCK)
+        .execute(&mut *transaction)
+        .await?;
+    if sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users)")
+        .fetch_one(&mut *transaction)
+        .await?
+    {
+        return Ok(None);
+    }
+    let id = create_user(
+        &mut transaction,
+        &registration.email,
+        &registration.name,
+        password_hash,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(Some(id))
 }
 
 #[derive(Deserialize)]
@@ -219,31 +274,14 @@ async fn register(
         Ok(registration) => registration,
         Err(message) => return api_error(StatusCode::BAD_REQUEST, message),
     };
-    let password_hash = match hash_password(registration.password).await {
+    let password_hash = match hash_password(registration.password.clone()).await {
         Ok(password_hash) => password_hash,
         Err(error) => return auth_error(error),
     };
 
-    let result =
-        sqlx::query("INSERT INTO owner (id, email, name, password_hash) VALUES ($1, $2, $3, $4)")
-            .bind(OWNER_ID)
-            .bind(registration.email)
-            .bind(registration.name)
-            .bind(password_hash)
-            .execute(&backend.pool)
-            .await;
-
-    match result {
-        Ok(_) => (StatusCode::CREATED, [(LOCATION, "/login/")]).into_response(),
-        Err(error)
-            if error
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref()
-                == Some("23505") =>
-        {
-            api_error(StatusCode::CONFLICT, "owner is already registered")
-        }
+    match create_owner(&backend.pool, &registration, &password_hash).await {
+        Ok(Some(_)) => (StatusCode::CREATED, [(LOCATION, "/login/")]).into_response(),
+        Ok(None) => api_error(StatusCode::CONFLICT, "owner is already registered"),
         Err(_error) => {
             error!("failed to register owner");
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error")
@@ -265,8 +303,8 @@ async fn login(
         email: request.email,
         password: request.password,
     };
-    let owner = match auth_session.authenticate(credentials).await {
-        Ok(Some(owner)) => owner,
+    let user = match auth_session.authenticate(credentials).await {
+        Ok(Some(user)) => user,
         Ok(None) => return api_error(StatusCode::UNAUTHORIZED, INVALID_LOGIN),
         Err(error) => {
             if matches!(error, axum_login::Error::Backend(AuthError::Busy)) {
@@ -277,7 +315,7 @@ async fn login(
         }
     };
 
-    match auth_session.login(&owner).await {
+    match auth_session.login(&user).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_error) => {
             error!("failed to establish owner session");
@@ -296,14 +334,28 @@ async fn logout(mut auth_session: AuthSession) -> Response {
     }
 }
 
+#[derive(Clone)]
+pub struct AccessGuard {
+    pub pool: PgPool,
+    /// Paths an extension serves without a session; each also covers what lies beneath it.
+    pub public_paths: &'static [&'static str],
+}
+
+fn is_public(path: &str, public_paths: &[&str]) -> bool {
+    public_paths.iter().any(|public| {
+        path.strip_prefix(public)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
 pub async fn access_guard(
-    State(pool): State<PgPool>,
+    State(AccessGuard { pool, public_paths }): State<AccessGuard>,
     auth_session: AuthSession,
     request: Request,
     next: Next,
 ) -> Response {
     let resource = Resource::from_uri(request.uri());
-    if resource == Resource::Asset {
+    if resource == Resource::Asset || is_public(request.uri().path(), public_paths) {
         return next.run(request).await;
     }
 
@@ -311,7 +363,7 @@ pub async fn access_guard(
     let owner_exists = if authenticated {
         false
     } else {
-        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM owner)")
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users)")
             .fetch_one(&pool)
             .await
         {
@@ -349,7 +401,12 @@ fn valid_email(email: &str) -> bool {
     })
 }
 
-async fn hash_password(password: String) -> Result<String, AuthError> {
+/// Raises the number of password hashes computed at once above the default.
+pub(crate) fn allow_password_jobs(jobs: usize) {
+    PASSWORD_JOBS.add_permits(jobs.saturating_sub(DEFAULT_PASSWORD_JOBS));
+}
+
+pub async fn hash_password(password: String) -> Result<String, AuthError> {
     let permit = PASSWORD_JOBS.try_acquire().map_err(|_| AuthError::Busy)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -362,7 +419,7 @@ async fn hash_password(password: String) -> Result<String, AuthError> {
     .map_err(AuthError::from_display)?
 }
 
-async fn verify_password(password: String, password_hash: String) -> Result<bool, AuthError> {
+pub async fn verify_password(password: String, password_hash: String) -> Result<bool, AuthError> {
     let permit = PASSWORD_JOBS.try_acquire().map_err(|_| AuthError::Busy)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -404,7 +461,7 @@ async fn change_password(
     auth_session: AuthSession,
     payload: Result<Json<ChangePasswordRequest>, JsonRejection>,
 ) -> Response {
-    let Some(owner) = auth_session.user else {
+    let Some(user) = auth_session.user else {
         return api_error(StatusCode::UNAUTHORIZED, "authentication required");
     };
     let Ok(Json(request)) = payload else {
@@ -416,7 +473,7 @@ async fn change_password(
             "password must be between 12 and 128 bytes",
         );
     }
-    match verify_password(request.current_password, owner.password_hash.clone()).await {
+    match verify_password(request.current_password, user.password_hash.clone()).await {
         Ok(true) => {}
         Ok(false) => return api_error(StatusCode::UNAUTHORIZED, "incorrect current password"),
         Err(error) => return auth_error(error),
@@ -426,10 +483,10 @@ async fn change_password(
         Err(error) => return auth_error(error),
     };
     // Compare the old hash so a racing change cannot undo an operator reset.
-    match sqlx::query("UPDATE owner SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
+    match sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
         .bind(hash)
-        .bind(owner.id)
-        .bind(owner.password_hash)
+        .bind(user.id)
+        .bind(user.password_hash)
         .execute(&backend.pool)
         .await
     {
@@ -439,19 +496,35 @@ async fn change_password(
     }
 }
 
-pub(crate) async fn reset_password(pool: &PgPool, password: String) -> Result<(), Box<dyn Error>> {
+/// Resets the only account, or the one with `email` when it is given.
+pub(crate) async fn reset_password(
+    pool: &PgPool,
+    email: Option<&str>,
+    password: String,
+) -> Result<(), Box<dyn Error>> {
     if !(12..=128).contains(&password.len()) {
         return Err("password must be between 12 and 128 bytes".into());
     }
     let hash = hash_password(password).await?;
-    let result = sqlx::query("UPDATE owner SET password_hash = $1 WHERE id = $2")
-        .bind(hash)
-        .bind(OWNER_ID)
-        .execute(pool)
+    let accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
         .await
         .map_err(|_| "could not reset owner password")?;
-    if result.rows_affected() != 1 {
+    if accounts == 0 {
         return Err("no owner exists; use initial setup".into());
+    }
+    if accounts > 1 && email.is_none() {
+        return Err("several accounts exist; name one by email".into());
+    }
+    let result =
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE $2::text IS NULL OR email = $2")
+            .bind(hash)
+            .bind(email.map(normalize_email))
+            .execute(pool)
+            .await
+            .map_err(|_| "could not reset owner password")?;
+    if result.rows_affected() != 1 {
+        return Err("no account has that email".into());
     }
     Ok(())
 }
@@ -652,6 +725,24 @@ mod tests {
             Err(AuthError::Busy)
         ));
         drop(permits);
+    }
+
+    #[test]
+    fn public_paths_cover_only_themselves_and_what_lies_beneath() {
+        let public = ["/verify", "/api/account"];
+
+        for path in [
+            "/verify",
+            "/verify/",
+            "/verify/index.html",
+            "/api/account/signup",
+        ] {
+            assert!(is_public(path, &public), "{path}");
+        }
+        for path in ["/", "/verified", "/api/accounts", "/api/books", "/x/verify"] {
+            assert!(!is_public(path, &public), "{path}");
+        }
+        assert!(!is_public("/api/books", &[]));
     }
 
     #[test]
