@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import favicon from '$lib/assets/favicon.svg';
+	import icon from '$lib/assets/icon.png';
 	import Sidebar from '$lib/Sidebar.svelte';
 	import { page } from '$app/state';
 	import '../app.css';
@@ -18,7 +18,8 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<link rel="icon" type="image/png" href={icon} />
+	<link rel="apple-touch-icon" href={icon} />
 	<meta name="theme-color" content="#f5f1e8" />
 </svelte:head>
 
