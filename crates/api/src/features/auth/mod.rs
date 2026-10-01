@@ -15,6 +15,8 @@ use sqlx::{FromRow, PgConnection, PgPool};
 use tokio::sync::Semaphore;
 use tracing::error;
 
+use crate::error::ApiError;
+
 // Held inside blocking work, even if the HTTP request is cancelled.
 static PASSWORD_JOBS: Semaphore = Semaphore::const_new(DEFAULT_PASSWORD_JOBS);
 
@@ -322,6 +324,21 @@ async fn login(
             api_error(StatusCode::INTERNAL_SERVER_ERROR, "server error")
         }
     }
+}
+
+/// Signs in an account whose identity an extension has already established.
+pub async fn sign_in(auth_session: &mut AuthSession, user_id: i64) -> Result<(), ApiError> {
+    let user = auth_session
+        .backend
+        .get_user(&user_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| ApiError::internal("server error"))?;
+    auth_session.login(&user).await.map_err(|_error| {
+        error!("failed to establish session");
+        ApiError::internal("server error")
+    })
 }
 
 async fn logout(mut auth_session: AuthSession) -> Response {

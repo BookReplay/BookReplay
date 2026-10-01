@@ -22,7 +22,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 
 pub use error::{ApiError, user_id};
 pub use features::auth::{
-    AuthError, AuthSession, Registration, create_user, hash_password, verify_password,
+    AuthError, AuthSession, Registration, create_user, hash_password, sign_in, verify_password,
 };
 
 /// What extension routes are built from.
