@@ -6,6 +6,15 @@
 	const MAX_FILE_BYTES = 16 * 1024 * 1024;
 	const TOO_LARGE = 'That file is larger than 16 MB, the most BookReplay accepts in one import.';
 
+	// Imports usually finish in a blink; hold the processing view long enough to register.
+	const MIN_PROCESSING_MS = 1800;
+	const STAGE_MS = 600;
+	const STAGES = [
+		'Reading your clippings…',
+		'Sorting highlights by book…',
+		'Shelving them in your library…'
+	];
+
 	type ImportResponse = {
 		error?: string;
 		parsed?: number;
@@ -22,8 +31,13 @@
 	let preview = $state('');
 	let showingPreview = $state(false);
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
+	let stage = $state(0);
+	let stageTimer: ReturnType<typeof setInterval> | undefined;
 
-	onDestroy(() => clearTimeout(previewTimer));
+	onDestroy(() => {
+		clearTimeout(previewTimer);
+		clearInterval(stageTimer);
+	});
 
 	async function upload(event: SubmitEvent) {
 		event.preventDefault();
@@ -48,6 +62,13 @@
 		showingPreview = false;
 		clearTimeout(previewTimer);
 
+		const started = performance.now();
+		stage = 0;
+		clearInterval(stageTimer);
+		stageTimer = setInterval(() => {
+			if (stage < STAGES.length - 1) stage += 1;
+		}, STAGE_MS);
+
 		try {
 			const response = await fetch('/api/clippings/import', {
 				method: 'POST',
@@ -55,6 +76,11 @@
 				body: await file.text()
 			});
 			const result = (await response.json().catch(() => ({}))) as ImportResponse;
+
+			if (response.ok) {
+				const remaining = MIN_PROCESSING_MS - (performance.now() - started);
+				if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+			}
 
 			success = response.ok;
 			if (response.ok) {
@@ -73,6 +99,7 @@
 			success = false;
 			message = 'Could not reach BookReplay. Check your connection and try again.';
 		} finally {
+			clearInterval(stageTimer);
 			uploading = false;
 		}
 	}
@@ -108,6 +135,17 @@
 				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start revision <span aria-hidden="true">→</span></a>
 			</div>
 		{:else}
+			{#if uploading}
+				<div class="text-center">
+					<p class="mb-5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Importing</p>
+					{#key stage}
+						<p class="import-preview m-0 font-serif text-[clamp(1.45rem,4vw,2.25rem)] leading-relaxed text-balance" role="status">{STAGES[stage]}</p>
+					{/key}
+					<div class="import-progress" aria-hidden="true"><span></span></div>
+				</div>
+			{/if}
+			<!-- Hidden rather than removed, so a failed import returns with the file still chosen. -->
+			<div hidden={uploading}>
 			<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Add to your library</p>
 			<h1 id="import-title" class="mb-4 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Bring your highlights home</h1>
 			<p class="m-0 text-[1.05rem] leading-relaxed text-muted">Choose the <code class="text-[0.9em]">My Clippings.txt</code> file from your Kindle. Your existing highlights will stay safe; duplicates are skipped.</p>
@@ -122,6 +160,7 @@
 				<p class="mt-4 leading-relaxed text-danger" role="alert">{message}</p>
 			{/if}
 			</form>
+			</div>
 		{/if}
 	</section>
 </main>

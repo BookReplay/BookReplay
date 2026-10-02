@@ -69,6 +69,28 @@
 	animation: import-preview 300ms ease-out both;
 }
 
+@keyframes import-progress {
+	from { transform: translateX(-100%); }
+	to { transform: translateX(250%); }
+}
+
+.import-progress {
+	height: 4px;
+	margin-top: 2rem;
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--color-sage);
+}
+
+.import-progress span {
+	display: block;
+	width: 40%;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--color-forest);
+	animation: import-progress 1.2s ease-in-out infinite;
+}
+
 /* A quiet reading room, with room to breathe on every screen. */
 .app-header { position: fixed; inset: 0 0 auto; height: 76px; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0 2rem; border-bottom: 1px solid var(--color-line); background: var(--color-paper); }
 .brand { display: flex; align-items: center; gap: .7rem; font: 1.5rem var(--font-serif); text-decoration: none; }
