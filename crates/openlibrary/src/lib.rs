@@ -1161,13 +1161,23 @@ mod provider_tests {
 mod database_tests {
     use super::*;
 
+    async fn user(connection: &mut sqlx::PgConnection) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id",
+        )
+        .fetch_one(connection)
+        .await
+        .unwrap()
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
     async fn enrichment_preserves_values_and_manual_identification_wins(pool: sqlx::PgPool) {
         let mut connection = pool.acquire().await.unwrap();
+        let user_id = user(&mut connection).await;
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO books (kindle_title, title, authors, cover_url) VALUES ('Original (Author)', 'Original', ARRAY['Author'], 'https://covers.openlibrary.org/b/id/1-L.jpg') RETURNING id"
-        ).fetch_one(&mut *connection).await.unwrap();
+            "INSERT INTO books (user_id, kindle_title, title, authors, cover_url) VALUES ($1, 'Original (Author)', 'Original', ARRAY['Author'], 'https://covers.openlibrary.org/b/id/1-L.jpg') RETURNING id"
+        ).bind(user_id).fetch_one(&mut *connection).await.unwrap();
         let book = PendingBook {
             id,
             kindle_title: "Original (Author)".into(),
@@ -1241,10 +1251,14 @@ mod database_tests {
             r#"{"docs":[{"key":"/works/OL1W","title":"Wrong","author_name":["Author"],"cover_i":1},{"key":"/works/OL2W","title":"Book","author_name":["Author"],"cover_i":2}]}"#,
         ]).await;
         let mut connection = pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO books (kindle_title, title) VALUES ('Book (Author)', 'Book')")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
+        let user_id = user(&mut connection).await;
+        sqlx::query(
+            "INSERT INTO books (user_id, kindle_title, title) VALUES ($1, 'Book (Author)', 'Book')",
+        )
+        .bind(user_id)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
         let service = OpenLibrary::with_search_url(Client::new(), &url);
         assert!(matches!(
             process_next_book(&mut connection, &service).await.unwrap(),
@@ -1266,10 +1280,12 @@ mod database_tests {
         // An address nothing listens on: every search is a transient request failure.
         let service = OpenLibrary::with_search_url(Client::new(), "http://127.0.0.1:9/search.json");
         let mut connection = pool.acquire().await.unwrap();
+        let user_id = user(&mut connection).await;
         sqlx::query(
-            "INSERT INTO books (kindle_title, title, retry_count) VALUES ('Fresh', 'Fresh', 0), ('Worn out', 'Worn out', $1)",
+            "INSERT INTO books (user_id, kindle_title, title, retry_count) VALUES ($2, 'Fresh', 'Fresh', 0), ($2, 'Worn out', 'Worn out', $1)",
         )
         .bind(MAX_RETRIES)
+        .bind(user_id)
         .execute(&mut *connection)
         .await
         .unwrap();

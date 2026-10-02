@@ -1,6 +1,6 @@
 use super::{ClippingsState, model, view::ImportResponse};
 use crate::{
-    error::{ApiError, database_cause, owner_id},
+    error::{ApiError, database_cause, user_id},
     features::auth::AuthSession,
 };
 use axum::{
@@ -26,17 +26,24 @@ pub async fn import(
         .map(|clipping| clipping.content.clone().into_boxed_str());
     info!(parsed, "clippings file parsed");
 
-    let user_id = owner_id(auth_session)?;
-    let result = model::insert(&state.pool, user_id, &clippings)
-        .await
-        .map_err(|error| {
-            error!(
-                parsed,
-                cause = database_cause(&error),
-                "failed to store parsed clippings"
-            );
-            ApiError::internal("clippings import failed")
-        })?;
+    let user_id = user_id(auth_session)?;
+    let result = model::insert(&state.pool, user_id, &clippings).await;
+    let inserted = result.as_ref().ok().map(|result| result.clippings);
+    // The import itself is what the reader asked for; a lost record of it is not their problem.
+    if let Err(error) = model::record_attempt(&state.pool, user_id, parsed, inserted).await {
+        error!(
+            cause = database_cause(&error),
+            "failed to record the import attempt"
+        );
+    }
+    let result = result.map_err(|error| {
+        error!(
+            parsed,
+            cause = database_cause(&error),
+            "failed to store parsed clippings"
+        );
+        ApiError::internal("clippings import failed")
+    })?;
     info!(
         parsed,
         clippings_inserted = result.clippings,
@@ -82,7 +89,7 @@ pub async fn update(
         ));
     }
 
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     let content = model::update_content(&state.pool, user_id, clipping_id, &request.content)
         .await
         .map_err(|error| {

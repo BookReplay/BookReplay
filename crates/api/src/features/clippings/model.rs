@@ -6,7 +6,7 @@ use sqlx::PgPool;
 
 pub async fn update_content(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     clipping_id: i64,
     content: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -28,7 +28,7 @@ pub struct ImportResult {
 
 pub async fn insert(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     clippings: &[Clipping],
 ) -> Result<ImportResult, sqlx::Error> {
     let mut transaction = pool.begin().await?;
@@ -41,9 +41,10 @@ pub async fn insert(
         }
         let (title, authors) = from_kindle_title(&clipping.book);
         inserted_books += sqlx::query(
-            "INSERT INTO books (kindle_title, title, authors) VALUES ($1, $2, $3) \
-             ON CONFLICT (kindle_title) DO NOTHING",
+            "INSERT INTO books (user_id, kindle_title, title, authors) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (user_id, kindle_title) DO NOTHING",
         )
+        .bind(user_id)
         .bind(&clipping.book)
         .bind(title)
         .bind(authors)
@@ -51,10 +52,12 @@ pub async fn insert(
         .await?
         .rows_affected() as usize;
 
-        let book_id: i64 = sqlx::query_scalar("SELECT id FROM books WHERE kindle_title = $1")
-            .bind(&clipping.book)
-            .fetch_one(&mut *transaction)
-            .await?;
+        let book_id: i64 =
+            sqlx::query_scalar("SELECT id FROM books WHERE user_id = $1 AND kindle_title = $2")
+                .bind(user_id)
+                .bind(&clipping.book)
+                .fetch_one(&mut *transaction)
+                .await?;
         book_ids.insert(clipping.book.as_str(), book_id);
     }
 
@@ -91,6 +94,30 @@ pub async fn insert(
     })
 }
 
+/// Notes that an import ran. `inserted` is `None` when storing the highlights failed.
+pub async fn record_attempt(
+    pool: &PgPool,
+    user_id: i64,
+    parsed: usize,
+    inserted: Option<usize>,
+) -> Result<(), sqlx::Error> {
+    let outcome = match inserted {
+        None => "failed",
+        Some(_) if parsed == 0 => "empty",
+        Some(_) => "stored",
+    };
+    sqlx::query(
+        "INSERT INTO import_attempts (user_id, parsed, inserted, outcome) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(parsed as i32)
+    .bind(inserted.unwrap_or(0) as i32)
+    .bind(outcome)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod database_tests {
     use super::*;
@@ -106,8 +133,8 @@ mod database_tests {
     #[sqlx::test(migrations = "../../migrations")]
     #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
     async fn reimport_after_an_edit_does_not_duplicate_the_highlight(pool: PgPool) {
-        let user_id: i16 = sqlx::query_scalar(
-            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
         ).fetch_one(&pool).await.unwrap();
         // Longer than a btree index row can hold when stored as text.
         let long: String = (0..4_000).map(|n| format!("{n:x}")).collect();
@@ -140,5 +167,58 @@ mod database_tests {
                 .await
                 .unwrap();
         assert_eq!(stored, ["Edited"]);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn a_user_cannot_edit_another_users_highlight(pool: PgPool) {
+        let [first, second]: [i64; 2] = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (name, email, password_hash) VALUES ('First', 'first@example.org', 'unused'), ('Second', 'second@example.org', 'unused') RETURNING id"
+        ).fetch_all(&pool).await.unwrap().try_into().unwrap();
+        insert(&pool, first, &[clipping("Location 1", "Original")])
+            .await
+            .unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT id FROM clippings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            update_content(&pool, second, id, "Edited").await.unwrap(),
+            None
+        );
+        let stored: String = sqlx::query_scalar("SELECT content FROM clippings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, "Original");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn each_import_attempt_is_recorded_with_its_outcome(pool: PgPool) {
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
+        ).fetch_one(&pool).await.unwrap();
+
+        record_attempt(&pool, user_id, 3, Some(2)).await.unwrap();
+        record_attempt(&pool, user_id, 0, Some(0)).await.unwrap();
+        record_attempt(&pool, user_id, 3, None).await.unwrap();
+
+        let stored: Vec<(i32, i32, String)> = sqlx::query_as(
+            "SELECT parsed, inserted, outcome FROM import_attempts WHERE user_id = $1 ORDER BY id",
+        )
+        .bind(user_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            [
+                (3, 2, "stored".to_string()),
+                (0, 0, "empty".to_string()),
+                (3, 0, "failed".to_string()),
+            ]
+        );
     }
 }

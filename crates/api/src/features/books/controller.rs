@@ -9,7 +9,7 @@ use tracing::error;
 
 use super::{BooksState, model};
 use crate::{
-    error::{ApiError, database_cause, owner_id},
+    error::{ApiError, database_cause, user_id},
     features::auth::AuthSession,
 };
 
@@ -22,7 +22,7 @@ pub async fn get_all(
     State(state): State<BooksState>,
     auth_session: AuthSession,
 ) -> Result<Json<Vec<model::BookSummary>>, ApiError> {
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     model::all(&state.pool, user_id)
         .await
         .map(Json)
@@ -37,7 +37,7 @@ pub async fn clippings(
     auth_session: AuthSession,
     Path(book_id): Path<i64>,
 ) -> Result<Json<Vec<model::BookClipping>>, ApiError> {
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     model::clippings(&state.pool, user_id, book_id)
         .await
         .map(Json)
@@ -87,7 +87,7 @@ pub async fn identify(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid book identification"))?;
     validate_candidate(&candidate)?;
 
-    let user_id = owner_id(auth_session)?;
+    let user_id = user_id(auth_session)?;
     model::identify(&state.pool, user_id, book_id, &candidate)
         .await
         .map_err(|error| {

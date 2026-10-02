@@ -11,7 +11,7 @@ pub struct BookSummary {
     pub highlight_count: i64,
 }
 
-pub async fn all(pool: &PgPool, user_id: i16) -> Result<Vec<BookSummary>, sqlx::Error> {
+pub async fn all(pool: &PgPool, user_id: i64) -> Result<Vec<BookSummary>, sqlx::Error> {
     sqlx::query_as(
         "SELECT books.id, books.title, books.authors, books.cover_url, \
                 COUNT(clippings.id) AS highlight_count \
@@ -33,7 +33,7 @@ pub struct BookClipping {
 
 pub async fn clippings(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     book_id: i64,
 ) -> Result<Vec<BookClipping>, sqlx::Error> {
     sqlx::query_as(
@@ -48,7 +48,7 @@ pub async fn clippings(
 
 pub async fn identify(
     pool: &PgPool,
-    user_id: i16,
+    user_id: i64,
     book_id: i64,
     book: &BookCandidate,
 ) -> Result<Option<BookSummary>, sqlx::Error> {
@@ -58,7 +58,7 @@ pub async fn identify(
                  first_publish_year = COALESCE($6, first_publish_year), edition_count = COALESCE($7, edition_count), isbns = CASE WHEN cardinality($8::text[]) > 0 THEN $8 ELSE isbns END, google_books_volume_id = COALESCE($10, google_books_volume_id), \
                  metadata_checked_at = NOW(), retry_count = 0, next_attempt_at = NOW(), \
                  last_error = NULL, updated_at = NOW() \
-             WHERE id = $1 RETURNING id, title, authors, cover_url\
+             WHERE id = $1 AND user_id = $9 RETURNING id, title, authors, cover_url\
          ) \
          SELECT updated.id, updated.title, updated.authors, updated.cover_url, \
                 COUNT(clippings.id) AS highlight_count \
@@ -119,8 +119,8 @@ mod database_tests {
     #[sqlx::test(migrations = "../../migrations")]
     #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
     async fn identification_supports_both_sources_and_duplicate_import_keeps_ids(pool: PgPool) {
-        let user_id: i16 = sqlx::query_scalar(
-            "INSERT INTO owner (id, name, email, password_hash) VALUES (1, 'Test', 'test@example.org', 'unused') RETURNING id"
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (name, email, password_hash) VALUES ('Test', 'test@example.org', 'unused') RETURNING id"
         ).fetch_one(&pool).await.unwrap();
         // Advance the sequence so the clipping id cannot equal the book id.
         sqlx::query("SELECT setval('clippings_id_seq', 40)")
@@ -198,6 +198,83 @@ mod database_tests {
                 true,
                 1990
             )
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires DATABASE_URL pointing to a disposable PostgreSQL server"]
+    async fn each_user_has_a_separate_library(pool: PgPool) {
+        let [first, second]: [i64; 2] = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users (name, email, password_hash) VALUES ('First', 'first@example.org', 'unused'), ('Second', 'second@example.org', 'unused') RETURNING id"
+        ).fetch_all(&pool).await.unwrap().try_into().unwrap();
+        let imported = vec![Clipping {
+            book: "Book (Author)".into(),
+            metadata: "Location 1".into(),
+            content: "Highlight".into(),
+        }];
+        // The same Kindle title is a separate book for each user.
+        for user_id in [first, second] {
+            let result = insert(&pool, user_id, &imported).await.unwrap();
+            assert_eq!((result.books, result.clippings), (1, 1));
+        }
+        let first_book = all(&pool, first).await.unwrap().remove(0);
+        let second_book = all(&pool, second).await.unwrap().remove(0);
+        assert_ne!(first_book.id, second_book.id);
+        assert_eq!(
+            (first_book.highlight_count, second_book.highlight_count),
+            (1, 1)
+        );
+
+        assert!(
+            clippings(&pool, second, first_book.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let candidate = BookCandidate {
+            provider: Provider::OpenLibrary,
+            provider_id: "/works/OL1W".into(),
+            title: "Rewritten".into(),
+            authors: vec![],
+            cover_url: None,
+            first_publish_year: None,
+            edition_count: None,
+            isbns: vec![],
+        };
+        assert!(
+            identify(&pool, second, first_book.id, &candidate)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(all(&pool, first).await.unwrap()[0].title, "Book");
+
+        // The schema itself refuses a highlight filed under another user's book.
+        let misfiled = sqlx::query(
+            "INSERT INTO clippings (user_id, book_id, metadata, content, import_hash) VALUES ($1, $2, 'm', 'c', 'h')",
+        )
+        .bind(second)
+        .bind(first_book.id)
+        .execute(&pool)
+        .await;
+        assert!(misfiled.is_err());
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(first)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM books")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, [second]);
+        assert_eq!(
+            clippings(&pool, second, second_book.id)
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 }
