@@ -39,7 +39,7 @@
 		<input class="rounded-md border border-line p-3" id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
 		<label for="confirmation">Confirm new password</label>
 		<input class="rounded-md border border-line p-3" id="confirmation" name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
-		<button class="rounded-md bg-forest p-3 font-bold text-cream disabled:opacity-70" disabled={submitting}>{submitting ? 'Changing…' : 'Change password'}</button>
+		<button class="rounded-md bg-forest p-3 font-bold text-on-forest disabled:opacity-70" disabled={submitting}>{submitting ? 'Changing…' : 'Change password'}</button>
 		{#if message}<p role="alert" class="text-danger">{message}</p>{/if}
 	</form>
 </main>

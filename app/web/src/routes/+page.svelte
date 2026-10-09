@@ -64,7 +64,7 @@
 				{/if}
 			</div>
 			<div class="ritual-aside">
-				<div class="reading-mark" aria-hidden="true"><svg viewBox="0 0 180 110" fill="none"><path d="M20 85Q53 69 90 87Q127 69 160 85L153 34Q119 21 90 40Q61 21 27 34Z" fill="#e5eadf" stroke="#4c5f46" stroke-width="2"/><path d="M90 40V87M36 46Q60 40 79 50M35 58Q60 52 79 62M101 50Q123 40 145 46M101 62Q124 52 146 58" stroke="#4c5f46" stroke-width="2" stroke-linecap="round"/><path d="M89 24V12M73 27L68 19M105 27L111 19" stroke="#a3533e" stroke-width="2" stroke-linecap="round"/></svg></div>
+				<div class="reading-mark" aria-hidden="true"><svg viewBox="0 0 180 110" fill="none"><path d="M20 85Q53 69 90 87Q127 69 160 85L153 34Q119 21 90 40Q61 21 27 34Z" fill="var(--color-sage)" stroke="var(--color-link)" stroke-width="2"/><path d="M90 40V87M36 46Q60 40 79 50M35 58Q60 52 79 62M101 50Q123 40 145 46M101 62Q124 52 146 58" stroke="var(--color-link)" stroke-width="2" stroke-linecap="round"/><path d="M89 24V12M73 27L68 19M105 27L111 19" stroke="var(--color-clay)" stroke-width="2" stroke-linecap="round"/></svg></div>
 				{#if progress.loaded}<DailyProgress count={progress.dailyRevisionCount} streak={progress.streak} />{:else}<p class="text-sm text-muted">Your daily progress is unavailable. You can still review.</p>{/if}
 				<p class="mt-4 text-center text-sm italic text-muted">Small moments. Lasting ideas.</p>
 			</div>
@@ -79,7 +79,7 @@
 					{#if !booksView}<p class="mt-1 text-muted">Browse or edit highlights when you need them.</p>{/if}
 				</div>
 				{#if books.length && !booksView}
-					<button class="cursor-pointer rounded-full border border-[#aeb9a6] bg-transparent px-4 py-2.5 font-[inherit] font-bold text-forest hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (libraryOpen = !libraryOpen)}>{libraryOpen ? 'Hide books' : `Browse ${books.length} book${books.length === 1 ? '' : 's'}`}</button>
+					<button class="cursor-pointer rounded-full border border-input-border bg-transparent px-4 py-2.5 font-[inherit] font-bold text-link hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" type="button" onclick={() => (libraryOpen = !libraryOpen)}>{libraryOpen ? 'Hide books' : `Browse ${books.length} book${books.length === 1 ? '' : 's'}`}</button>
 				{/if}
 			</div>
 			{#if error}

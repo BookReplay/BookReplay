@@ -52,23 +52,23 @@
 			<div>
 				<label class="mb-2 block font-bold" for="setup-secret">Setup secret</label>
 				<p id="setup-help" class="mb-2 text-sm text-muted-light">Enter the secret configured by the server operator.</p>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3" id="setup-secret" name="setup_secret" type="password" autocomplete="off" maxlength="128" aria-describedby="setup-help" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3" id="setup-secret" name="setup_secret" type="password" autocomplete="off" maxlength="128" aria-describedby="setup-help" required />
 			</div>
 			<div>
 				<label class="mb-2 block font-bold" for="name">Name</label>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="name" name="name" type="text" autocomplete="name" maxlength="100" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="name" name="name" type="text" autocomplete="name" maxlength="100" required />
 			</div>
 			<div>
 				<label class="mb-2 block font-bold" for="email">Email</label>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="email" name="email" type="email" autocomplete="email" maxlength="254" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="email" name="email" type="email" autocomplete="email" maxlength="254" required />
 			</div>
 			<div>
 				<label class="mb-2 block font-bold" for="password">Password</label>
 				<p id="password-help" class="mb-2 text-sm text-muted-light">Use 12–128 characters. Accented letters and emoji count as more than one.</p>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" aria-describedby="password-help" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" aria-describedby="password-help" required />
 			</div>
 
-			<button class="w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-cream hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={submitting}>{submitting ? 'Creating account…' : 'Create owner account'}</button>
+			<button class="w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-on-forest hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={submitting}>{submitting ? 'Creating account…' : 'Create owner account'}</button>
 			{#if message}
 				<p class="m-0 leading-relaxed text-danger" role="alert" aria-live="polite">{message}</p>
 			{/if}

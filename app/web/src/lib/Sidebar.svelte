@@ -62,6 +62,6 @@
 <style>
 	.active {
 		background: var(--color-sage);
-		color: var(--color-forest-dark);
+		color: var(--color-link-hover);
 	}
 </style>

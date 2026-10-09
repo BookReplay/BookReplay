@@ -49,14 +49,14 @@
 		<form class="mt-9 grid gap-5" onsubmit={login}>
 			<div>
 				<label class="mb-2 block font-bold" for="email">Email</label>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="email" name="email" type="email" autocomplete="email" maxlength="254" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="email" name="email" type="email" autocomplete="email" maxlength="254" required />
 			</div>
 			<div>
 				<label class="mb-2 block font-bold" for="password">Password</label>
-				<input class="w-full rounded-md border border-line bg-[#faf7ef] px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
+				<input class="w-full rounded-md border border-line bg-input px-3.5 py-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
 			</div>
 
-			<button class="w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-cream hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>
+			<button class="w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-on-forest hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>
 			{#if message}
 				<p class="m-0 leading-relaxed text-danger" role="alert" aria-live="polite">{message}</p>
 			{/if}

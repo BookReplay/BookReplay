@@ -116,7 +116,7 @@
 	<nav class="flex items-center justify-between gap-4" aria-label="Primary navigation">
 		<a class="font-serif text-[1.4rem] font-bold text-ink no-underline focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">BookReplay</a>
 		<div class="flex items-center gap-4">
-			<a class="text-sm font-bold text-forest focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">← Your bookshelf</a>
+			<a class="text-sm font-bold text-link focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" href="/">← Your bookshelf</a>
 			<LogoutButton />
 		</div>
 	</nav>
@@ -132,7 +132,7 @@
 				<p class="mb-4 text-3xl text-clay" aria-hidden="true">✦</p>
 				<h1 class="mb-3 font-serif text-[clamp(2.25rem,8vw,4.5rem)] leading-[0.98] tracking-[-0.04em] text-balance">Your highlights are imported</h1>
 				<p class="mb-8 text-[1.05rem] leading-relaxed text-muted">{importedCount} highlight{importedCount === 1 ? '' : 's'} imported{skippedCount ? `; ${skippedCount} already in your library` : ''}. Ready to revisit them?</p>
-				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-cream no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start revision <span aria-hidden="true">→</span></a>
+				<a class="inline-block rounded-full border border-forest bg-forest px-6 py-3.5 font-bold text-on-forest no-underline shadow-cover hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/review/">Start revision <span aria-hidden="true">→</span></a>
 			</div>
 		{:else}
 			{#if uploading}
@@ -153,8 +153,8 @@
 			<form class="mt-10" onsubmit={upload} aria-describedby="file-help">
 			<label class="mb-2 block font-bold" for="clippings">Clippings file</label>
 			<p id="file-help" class="mb-3 text-sm text-muted-light">A plain-text <code class="text-[0.9em]">.txt</code> export from your Kindle.</p>
-			<input class="w-full rounded-md border border-dashed border-[#9e8e75] bg-[#faf7ef] p-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" id="clippings" name="clippings" type="file" accept=".txt,text/plain" autocomplete="off" required />
-			<button class="mt-4 w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-cream hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={uploading}>{uploading ? 'Importing…' : 'Import clippings'}</button>
+			<input class="w-full rounded-md border border-dashed border-input-border bg-input p-3 font-[inherit] focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay" id="clippings" name="clippings" type="file" accept=".txt,text/plain" autocomplete="off" required />
+			<button class="mt-4 w-full cursor-pointer rounded-md border border-forest bg-forest px-4 py-3.5 font-[inherit] font-bold text-on-forest hover:bg-forest-dark focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-clay disabled:cursor-wait disabled:opacity-70" type="submit" disabled={uploading}>{uploading ? 'Importing…' : 'Import clippings'}</button>
 
 			{#if message}
 				<p class="mt-4 leading-relaxed text-danger" role="alert">{message}</p>

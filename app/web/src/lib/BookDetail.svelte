@@ -35,7 +35,7 @@
 	}
 </script>
 
-<a class="mt-12 mb-6 inline-block no-underline font-bold text-forest hover:text-clay focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/?view=books">← All books</a>
+<a class="mt-12 mb-6 inline-block no-underline font-bold text-link hover:text-clay focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-clay" href="/?view=books">← All books</a>
 <header class="flex items-end gap-[clamp(1.25rem,4vw,2.5rem)] border-b border-line pb-10 max-sm:items-start">
 	{#if book.cover_url}
 		<img
@@ -46,7 +46,7 @@
 			height="240"
 		/>
 	{:else}
-		<div class="grid h-60 w-40 shrink-0 place-items-center rounded-sm bg-forest font-serif text-[clamp(2.5rem,6vw,4rem)] text-cream shadow-cover max-sm:h-36 max-sm:w-24" aria-hidden="true">{book.title.slice(0, 1)}</div>
+		<div class="grid h-60 w-40 shrink-0 place-items-center rounded-sm bg-forest font-serif text-[clamp(2.5rem,6vw,4rem)] text-on-forest shadow-cover max-sm:h-36 max-sm:w-24" aria-hidden="true">{book.title.slice(0, 1)}</div>
 	{/if}
 	<div class="min-w-0">
 		<p class="mb-2.5 text-xs font-extrabold tracking-[0.14em] text-clay uppercase">Selected book</p>
@@ -68,7 +68,7 @@
 			<article class="rounded-lg border border-line bg-cream p-[clamp(1.25rem,4vw,2rem)] shadow-[0_0.4rem_1.3rem_rgb(80_65_40/6%)]">
 				<div class="mb-5 flex items-start justify-between gap-4">
 					<blockquote class="m-0 font-serif text-[clamp(1.05rem,2vw,1.2rem)] leading-[1.7] break-words">{highlight.content}</blockquote>
-					<button class="shrink-0 cursor-pointer rounded-md border border-[#aeb9a6] bg-transparent px-3 py-1.5 font-[inherit] text-sm font-bold text-forest hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" type="button" onclick={() => editDialog.open(highlight)}>Edit</button>
+					<button class="shrink-0 cursor-pointer rounded-md border border-input-border bg-transparent px-3 py-1.5 font-[inherit] text-sm font-bold text-link hover:border-forest hover:bg-sage focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-clay" type="button" onclick={() => editDialog.open(highlight)}>Edit</button>
 				</div>
 				<footer class="text-xs text-muted-light break-words">{highlight.metadata}</footer>
 			</article>

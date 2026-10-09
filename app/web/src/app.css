@@ -6,6 +6,14 @@
 	--color-ink: #29261f;
 	--color-cream: #fffdf8;
 	--color-forest: #4c5f46;
+	--color-on-forest: #fffdf8;
+	--color-link: #4c5f46;
+	--color-link-hover: #3d4d38;
+	--color-input: #faf7ef;
+	--color-input-border: #aeb9a6;
+	--color-error-surface: #f9e8e2;
+	--color-streak: #f3e6d5;
+	--color-streak-text: #80472e;
 	--color-forest-dark: #3d4d38;
 	--color-sage: #e5eadf;
 	--color-clay: #a3533e;
@@ -18,6 +26,41 @@
 	--color-success: #386633;
 	--shadow-cover: 0 0.55rem 1.35rem rgb(80 65 40 / 16%);
 	--shadow-cover-hover: 0 1rem 1.8rem rgb(80 65 40 / 22%);
+}
+
+/* Warm charcoal, cream, moss, and terracotta from the landing page. */
+:root {
+	color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--color-paper: #29261f;
+	--color-ink: #fffdf8;
+	--color-cream: #343129;
+	--color-sage: #343b31;
+	--color-clay: #c27660;
+	--color-muted: #c9c1b2;
+	--color-muted-light: #b5ac9d;
+	--color-line: #575247;
+	--color-link: #b8c9ad;
+	--color-link-hover: #d5e2cb;
+	--color-input: #29261f;
+	--color-input-border: #777e6e;
+	--color-chip: #49382e;
+	--color-chip-text: #e6bca6;
+	--color-danger: #f1a397;
+	--color-success: #adce9f;
+	--color-error-surface: #49302a;
+	--color-streak: #49382e;
+	--color-streak-text: #e6bca6;
+	--shadow-cover: 0 0.55rem 1.35rem rgb(0 0 0 / 24%);
+	--shadow-cover-hover: 0 1rem 1.8rem rgb(0 0 0 / 32%);
+}
+
+:root[data-theme='dark'] ::selection {
+	background: #a3533e;
+	color: #fffdf8;
 }
 
 @layer base {
@@ -94,34 +137,34 @@
 /* A quiet reading room, with room to breathe on every screen. */
 .app-header { position: fixed; inset: 0 0 auto; height: 76px; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0 2rem; border-bottom: 1px solid var(--color-line); background: var(--color-paper); }
 .brand { display: flex; align-items: center; gap: .7rem; font: 1.5rem var(--font-serif); text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 38px; background: var(--color-forest); color: var(--color-cream); border-radius: 5px 10px 10px 5px; font-style: italic; }
+.brand-mark { width: 38px; height: 38px; object-fit: contain; border-radius: 8px; }
 .header-note { color: var(--color-muted); font: italic .95rem var(--font-serif); }
-.import-link { font-size: .85rem; text-decoration: none; color: var(--color-forest); padding: .65rem 1rem; border: 1px solid var(--color-line); border-radius: 999px; }
+.import-link { font-size: .85rem; text-decoration: none; color: var(--color-link); padding: .65rem 1rem; border: 1px solid var(--color-line); border-radius: 999px; }
 .app-sidebar { position: fixed; inset: 76px auto 0 0; z-index: 10; width: 196px; padding: 2rem 1rem; border-right: 1px solid var(--color-line); background: var(--color-paper); }
 .with-shell { margin-left: 196px; padding-top: 76px; }
 .nav-items { display: grid; gap: .5rem; }
 .nav-link { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; min-height: 48px; border-radius: 9px; text-decoration: none; color: var(--color-muted); font-size: .9rem; }
-.nav-link:hover { background: var(--color-sage); color: var(--color-forest-dark); }
-.nav-streak { margin-left: auto; background: var(--color-forest); color: var(--color-cream); border-radius: 5px; padding: .1rem .35rem; font-size: .7rem; }
+.nav-link:hover { background: var(--color-sage); color: var(--color-link-hover); }
+.nav-streak { margin-left: auto; background: var(--color-forest); color: var(--color-on-forest); border-radius: 5px; padding: .1rem .35rem; font-size: .7rem; }
 .eyebrow { color: var(--color-clay); font-size: .68rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
 .ritual-home { display: grid; grid-template-columns: 1.35fr 1fr; align-items: center; gap: clamp(2rem,5vw,5rem); max-width: 1000px; margin: clamp(2rem,6vw,5rem) auto 0; }
 .ritual-intro h1 { margin: 1.25rem 0; font: clamp(2.6rem,4.5vw,4.4rem)/1.08 var(--font-serif); letter-spacing: -.045em; }
-.ritual-intro h1 em { font-weight: normal; color: var(--color-forest); }
+.ritual-intro h1 em { font-weight: normal; color: var(--color-link); }
 .intro-copy { color: var(--color-muted); font-size: 1rem; line-height: 1.8; max-width: 33rem; margin: 1.3rem 0 1.8rem; }
 .primary-button, .secondary-button { display: inline-flex; justify-content: center; align-items: center; gap: 1.5rem; min-height: 48px; padding: .8rem 1.4rem; border-radius: 999px; font-size: .9rem; font-weight: 600; text-decoration: none; cursor: pointer; }
-.primary-button { color: var(--color-cream); background: var(--color-forest); border: 1px solid var(--color-forest); box-shadow: 0 4px 10px #4c5f4615; }
+.primary-button { color: var(--color-on-forest); background: var(--color-forest); border: 1px solid var(--color-forest); box-shadow: 0 4px 10px #4c5f4615; }
 .primary-button:hover { background: var(--color-forest-dark); transform: translateY(-2px); }
-.secondary-button { color: var(--color-forest); background: transparent; border: 1px solid var(--color-line); }
+.secondary-button { color: var(--color-link); background: transparent; border: 1px solid var(--color-line); }
 .secondary-button:hover { background: var(--color-sage); }
 .reading-mark { margin: 0 auto .5rem; width: 180px; }
 .daily-progress { border: 1px solid var(--color-line); border-radius: 16px; padding: 1.4rem; background: var(--color-cream); text-align: left; }
-.streak-pill { display: inline-flex; align-items: center; gap: .4rem; border-radius: 999px; padding: .4rem .65rem; background: #f3e6d5; color: #80472e; white-space: nowrap; font-size: .75rem; }
+.streak-pill { display: inline-flex; align-items: center; gap: .4rem; border-radius: 999px; padding: .4rem .65rem; background: var(--color-streak); color: var(--color-streak-text); white-space: nowrap; font-size: .75rem; }
 .ritual-steps { display: flex; gap: .6rem; margin: 1.3rem 0 .8rem; }
 .ritual-steps span { flex: 1; display: grid; place-items: center; height: 34px; border: 1px solid var(--color-line); background: var(--color-paper); border-radius: 6px; color: var(--color-muted); font-size: .75rem; transition: background .35s, color .35s; }
-.ritual-steps .filled { background: var(--color-forest); color: var(--color-cream); border-color: var(--color-forest); }
+.ritual-steps .filled { background: var(--color-forest); color: var(--color-on-forest); border-color: var(--color-link); }
 .review-main { width: calc(100% - 4rem); max-width: 760px; margin: auto; padding: 2rem 0 3rem; }
 .review-topline { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; }
-.quiet-link { color: var(--color-forest); text-decoration: none; font-size: .85rem; }
+.quiet-link { color: var(--color-link); text-decoration: none; font-size: .85rem; }
 .quiet-link:hover { text-decoration: underline; }
 .review-session { margin-top: 1.5rem; scroll-margin-top: 96px; }
 .review-main > .daily-progress { padding: 1rem 1.25rem; }
@@ -136,18 +179,18 @@
 .reflection-prompt { border-top: 1px solid var(--color-line); padding-top: 1rem; color: var(--color-muted); font: italic .9rem/1.6 var(--font-serif); }
 .review-choices { text-align: center; margin-top: 2rem; }
 .rating-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: .7rem; margin-top: 1.2rem; }
-.rating-grid button { cursor: pointer; padding: .85rem .5rem; border: 1px solid #aeb9a6; border-radius: 10px; background: var(--color-cream); color: var(--color-forest-dark); min-height: 72px; }
-.rating-grid button:hover { background: var(--color-sage); border-color: var(--color-forest); transform: translateY(-2px); }
+.rating-grid button { cursor: pointer; padding: .85rem .5rem; border: 1px solid var(--color-input-border); border-radius: 10px; background: var(--color-cream); color: var(--color-link-hover); min-height: 72px; }
+.rating-grid button:hover { background: var(--color-sage); border-color: var(--color-link); transform: translateY(-2px); }
 .rating-grid span { display: block; font-size: .95rem; font-weight: 600; }
 .rating-grid small { display: block; margin-top: .3rem; color: var(--color-muted); font-size: .75rem; }
 .archive-button { cursor: pointer; min-height: 44px; margin-top: .6rem; font-size: .75rem; color: var(--color-muted); padding: .5rem; }
 .archive-button:hover { text-decoration: underline; }
 button:disabled { opacity: .55; cursor: wait; }
-.save-feedback { min-height: 1.5rem; margin-top: .75rem; text-align: center; font-size: .8rem; color: var(--color-forest); }
+.save-feedback { min-height: 1.5rem; margin-top: .75rem; text-align: center; font-size: .8rem; color: var(--color-link); }
 .completion-card { max-width: 580px; margin: 3rem auto; text-align: center; }
 .completion-card h1 { margin: 1.2rem 0; font: clamp(2.5rem,5vw,3.6rem)/1.1 var(--font-serif); letter-spacing: -.04em; }
 .completion-card .intro-copy { margin-inline: auto; }
-.completion-seal { display: grid; place-items: center; margin: 0 auto 1.8rem; width: 80px; height: 80px; background: var(--color-sage); color: var(--color-forest); border-radius: 50%; font-size: 2rem; }
+.completion-seal { display: grid; place-items: center; margin: 0 auto 1.8rem; width: 80px; height: 80px; background: var(--color-sage); color: var(--color-link); border-radius: 50%; font-size: 2rem; }
 .empty-state { padding: 20vh 0; text-align: center; color: var(--color-muted); }
 a, button { transition: background-color .2s, color .2s, box-shadow .2s, transform .2s; }
 :focus-visible { outline: 3px solid var(--color-clay); outline-offset: 4px; }
@@ -159,7 +202,7 @@ a, button { transition: background-color .2s, color .2s, box-shadow .2s, transfo
 	.app-header { height: 64px; padding: 0 1rem; }
 	.brand { font-size: 1.2rem; gap: .5rem; }
 	.import-link { font-size: .75rem; padding: .5rem .7rem; }
-	.brand-mark { width: 28px; height: 32px; }
+	.brand-mark { width: 32px; height: 32px; }
 	.app-sidebar { inset: auto 0 0; width: auto; padding: .35rem .3rem calc(.35rem + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--color-line); background: var(--color-cream); z-index: 30; }
 	.nav-items { grid-template-columns: repeat(5,1fr); gap: .1rem; }
 	.nav-link { flex-direction: column; justify-content: center; gap: .25rem; padding: .45rem .1rem; font-size: .65rem; min-height: 54px; }
